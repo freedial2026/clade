@@ -1,0 +1,35 @@
+[project]
+name = "claude-code-project-operations"
+version = "2.0.0"
+description = "Standard-library tooling for a Claude Code project template"
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+app = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "alembic",
+    "httpx",
+]
+ml = [
+    "scikit-learn",
+    "lightgbm",
+    "catboost",
+]
+dev = [
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "example-read-only": {
+      "command": "REPLACE_ME",
+      "args": [],
+      "env": {}
+    }
+  }
+}

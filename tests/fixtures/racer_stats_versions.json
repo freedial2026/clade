@@ -1,0 +1,38 @@
+[
+  {
+    "entity_key": "4321",
+    "payload": {"win_rate": 5.5},
+    "temporal": {
+      "event_time": "2026-01-01T00:00:00+00:00",
+      "published_at": "2026-01-01T01:00:00+00:00",
+      "collected_at": "2026-01-01T02:00:00+00:00",
+      "available_at": "2026-01-01T03:00:00+00:00",
+      "valid_from": "2026-01-01T00:00:00+00:00",
+      "valid_to": "2026-02-01T00:00:00+00:00"
+    }
+  },
+  {
+    "entity_key": "4321",
+    "payload": {"win_rate": 6.0},
+    "temporal": {
+      "event_time": "2026-02-01T00:00:00+00:00",
+      "published_at": "2026-02-01T01:00:00+00:00",
+      "collected_at": "2026-02-01T02:00:00+00:00",
+      "available_at": "2026-02-01T03:00:00+00:00",
+      "valid_from": "2026-02-01T00:00:00+00:00",
+      "valid_to": null
+    }
+  },
+  {
+    "entity_key": "9999",
+    "payload": {"win_rate": 4.0},
+    "temporal": {
+      "event_time": "2026-01-10T00:00:00+00:00",
+      "published_at": "2026-01-10T01:00:00+00:00",
+      "collected_at": "2026-01-10T02:00:00+00:00",
+      "available_at": "2026-01-10T03:00:00+00:00",
+      "valid_from": "2026-01-10T00:00:00+00:00",
+      "valid_to": null
+    }
+  }
+]

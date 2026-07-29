@@ -1,0 +1,40 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.claude/state/*.jsonl
+.claude/state/session-*
+.claude/scheduled_tasks.lock
+.mcp.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Data / model artifacts
+artifacts/
+data/raw/
+data/private/
+models/*.bin
+models/*.pkl
+models/*.joblib
+catboost_info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build
+build/
+dist/
+coverage/
+htmlcov/

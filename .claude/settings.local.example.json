@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(make validate:*)",
+      "Bash(make test:*)",
+      "Bash(make quality:*)"
+    ]
+  },
+  "env": {
+    "CLAUDE_MECHANICAL_MODEL": "haiku",
+    "CLAUDE_STANDARD_MODEL": "sonnet",
+    "CLAUDE_ADVANCED_MODEL": "opus"
+  }
+}
