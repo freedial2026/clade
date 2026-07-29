@@ -207,3 +207,52 @@ data — docs/domain/.../implementation_guide.md line 1642).
 
 No git commits have been made this session (repo was `git init`'d in
 P0-T001 but nothing committed) — commit only when explicitly asked.
+
+---
+
+## Real official data: first milestone (step 1 of the above, in progress)
+
+Confirmed and downloaded real data from the official source, per
+docs/PROJECT_PROFILE.md's source priority (official downloadable files
+first) and docs/domain/.../implementation_guide.md §6.3 (no per-second
+polling, respect robots.txt/site policy):
+
+- **Source**: `https://www1.mbrace.or.jp/od2/K/` (results/"K-file"),
+  operated by the general incorporated foundation BOATRACE Promotion
+  Association. robots.txt has no disallow rules. URL pattern confirmed
+  by manually navigating the site's own download index:
+  `{base}/{YYYYMM}/k{YYMMDD}.lzh`. Data available back to 2005-01.
+- `src/boat_prediction/official_source.py` (new): `download_k_file()`/
+  `download_month()` (rate-limited, default 3s between requests,
+  injectable HTTP opener for testing) and `extract_k_file_text()`
+  (LZH extraction via `pylhasa` — a pure-Python-installable binding,
+  cross-platform, no external system tool needed; new `official-data`
+  extra in `pyproject.toml`).
+- `src/boat_prediction/kfile_parser.py` (new): parses the extracted
+  Shift-JIS text into `ParsedVenueDay` -> `ParsedRace` ->
+  `RaceEntryResult`/`RacePayout`. **Key structural finding from real
+  data**: one K-file covers *all* venues racing that day, each
+  delimited by a `{venue_code}KBGN`/`{venue_code}KEND` marker pair
+  (venue_code is the same 01-24 code as `race_id.py`) — race numbers
+  1-12 repeat per venue, so parsing keys on `(venue_code, race_number)`,
+  not race_number alone (an earlier version of this parser merged all
+  venues' races together before this was caught by validating against
+  a real downloaded file).
+- **Validated against real data**: downloaded and parsed a full day
+  (2026-06-01, `data/raw/boatrace/K/202606/`, gitignored — not
+  committed): 12 venues × 12 races × 6 entries = 864 entries and
+  12×12×10 = 1440 payouts, exact match with zero rows lost or
+  duplicated. 12 non-numeric disqualification/absence/false-start codes
+  (S0, S1, K0, F, L0, L1) correctly captured with `finish_position=None`
+  and the raw code preserved rather than crashing or being dropped.
+- 327/327 tests pass (11 new parser tests use a small hand-written
+  synthetic excerpt mimicking the real structure, not committed real
+  data, to avoid redistributing the official body's copyrighted
+  content in this repository).
+
+**Not yet done**: wiring this into `ingest.py`/`inventory.py`'s
+staging pipeline, mapping parsed records into P0-T003's `RaceKey`/
+racer/venue tables, and downloading more than the one pilot month
+needed for full P1/P2/P3 re-validation (step 2 above). The B-file
+(race card / pre-race entries) has not been located or parsed yet —
+only K-file (results) so far.

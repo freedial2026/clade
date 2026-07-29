@@ -21,6 +21,9 @@ ml = [
 dev = [
     "ruff",
 ]
+official-data = [
+    "pylhasa",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
