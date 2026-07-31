@@ -90,9 +90,48 @@ def download_month(
     return paths
 
 
+def _select_archive_member(entries: list, lzh_path: Path):
+    """Pick the one member to parse from an opened archive.
+
+    Almost every archive holds exactly one member. Four in the 2005-2026
+    K-file range (`k080706`, `k080713`, `k090406`, `k090708`) instead
+    hold the *same day* twice under names differing only in case
+    (`K090406.TXT` and `k090406.txt`) — a re-issue, not two different
+    days. Rejecting those cost four days of results, so they are
+    resolved here instead.
+
+    The two copies differ only in text layout: the larger member uses
+    the same modern layout as the neighbouring single-member days
+    ("一般戦", "晴れ"), the smaller an older one ("一　　般", "晴"). Parsed
+    output is identical for three of the four; in `k080706` venue 05
+    race 9 the older copy yields `exhibition_time=0.0` for a 欠場 (K0)
+    row where the modern one correctly yields `None` — a fabricated
+    zero that would reach features as a real exhibition time. So the
+    larger member is preferred, with the name as a stable tie-break.
+
+    Members whose names are not the same file are still rejected: that
+    is a genuinely ambiguous archive, not a known re-issue.
+    """
+    if len(entries) == 1:
+        return entries[0]
+    if not entries:
+        raise OfficialSourceError(f"archive contains no file member: {lzh_path}")
+
+    names = {str(entry.safe_path).lower() for entry in entries}
+    if len(names) != 1:
+        raise OfficialSourceError(
+            f"expected one file in {lzh_path}, found {len(entries)} distinct members: "
+            f"{sorted(names)}"
+        )
+    return max(entries, key=lambda entry: (entry.size, str(entry.safe_path)))
+
+
 def extract_k_file_text(lzh_path: Path) -> str:
-    """Extract a downloaded K-file .lzh and decode its single text
-    member as Shift-JIS (the encoding used by this data source)."""
+    """Extract a downloaded K-file .lzh and decode its text member as
+    Shift-JIS (the encoding used by this data source).
+
+    See `_select_archive_member` for the handful of archives that carry
+    the same day twice."""
     import pylhasa
 
     if not lzh_path.is_file():
@@ -104,9 +143,4 @@ def extract_k_file_text(lzh_path: Path) -> str:
     except Exception as exc:
         raise OfficialSourceError(f"failed to open archive {lzh_path}: {exc}") from exc
 
-    if len(entries) != 1:
-        raise OfficialSourceError(
-            f"expected exactly one file in {lzh_path}, found {len(entries)}"
-        )
-
-    return entries[0].read().decode("shift_jis", errors="replace")
+    return _select_archive_member(entries, lzh_path).read().decode("shift_jis", errors="replace")

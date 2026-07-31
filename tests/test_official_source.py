@@ -132,8 +132,9 @@ class ExtractKFileTextTest(unittest.TestCase):
         self.assertEqual(text, "大村")
 
     @unittest.skipUnless(HAS_PYLHASA, "pylhasa (the 'official-data' extra) is not installed")
-    def test_rejects_an_archive_with_more_than_one_member(self) -> None:
-        entry_a, entry_b = MagicMock(is_dir=False), MagicMock(is_dir=False)
+    def test_rejects_an_archive_holding_two_different_files(self) -> None:
+        entry_a = MagicMock(is_dir=False, safe_path="k260601.txt", size=10)
+        entry_b = MagicMock(is_dir=False, safe_path="k260602.txt", size=10)
 
         with tempfile.TemporaryDirectory() as tmp:
             lzh_path = Path(tmp) / "k260601.lzh"
@@ -142,6 +143,51 @@ class ExtractKFileTextTest(unittest.TestCase):
             with patch("pylhasa.open", return_value=[entry_a, entry_b]):
                 with self.assertRaises(OfficialSourceError):
                     extract_k_file_text(lzh_path)
+
+    @unittest.skipUnless(HAS_PYLHASA, "pylhasa (the 'official-data' extra) is not installed")
+    def test_rejects_an_archive_with_no_file_member(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lzh_path = Path(tmp) / "k260601.lzh"
+            lzh_path.write_bytes(b"placeholder")
+
+            with patch("pylhasa.open", return_value=[MagicMock(is_dir=True)]):
+                with self.assertRaises(OfficialSourceError):
+                    extract_k_file_text(lzh_path)
+
+    @unittest.skipUnless(HAS_PYLHASA, "pylhasa (the 'official-data' extra) is not installed")
+    def test_prefers_the_larger_copy_when_a_day_is_archived_twice(self) -> None:
+        # Real shape of k080706/k080713/k090406/k090708: the same day under
+        # two names differing only in case, the larger being the modern
+        # layout. See `_select_archive_member`.
+        older = MagicMock(is_dir=False, safe_path="K260601.TXT", size=100)
+        older.read.return_value = "旧".encode("shift_jis")
+        newer = MagicMock(is_dir=False, safe_path="k260601.txt", size=120)
+        newer.read.return_value = "新".encode("shift_jis")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lzh_path = Path(tmp) / "k260601.lzh"
+            lzh_path.write_bytes(b"placeholder")
+
+            for members in ([older, newer], [newer, older]):
+                with patch("pylhasa.open", return_value=members):
+                    self.assertEqual(extract_k_file_text(lzh_path), "新")
+
+    @unittest.skipUnless(HAS_PYLHASA, "pylhasa (the 'official-data' extra) is not installed")
+    def test_breaks_a_size_tie_on_the_member_name(self) -> None:
+        first = MagicMock(is_dir=False, safe_path="K260601.TXT", size=100)
+        first.read.return_value = "A".encode("shift_jis")
+        second = MagicMock(is_dir=False, safe_path="k260601.txt", size=100)
+        second.read.return_value = "B".encode("shift_jis")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lzh_path = Path(tmp) / "k260601.lzh"
+            lzh_path.write_bytes(b"placeholder")
+
+            for members in ([first, second], [second, first]):
+                with patch("pylhasa.open", return_value=members):
+                    # "k..." sorts after "K...", so the choice is stable
+                    # regardless of the order pylhasa yields members in.
+                    self.assertEqual(extract_k_file_text(lzh_path), "B")
 
 
 if __name__ == "__main__":
