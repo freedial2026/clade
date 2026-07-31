@@ -654,6 +654,7 @@ class OddsLoadStats:
     skipped_no_deadline: int = 0
     skipped_race_not_found: int = 0
     skipped_missing_value: int = 0
+    skipped_already_observed: int = 0
 
     def merge(self, other: OddsLoadStats) -> OddsLoadStats:
         return OddsLoadStats(
@@ -662,6 +663,8 @@ class OddsLoadStats:
             skipped_no_deadline=self.skipped_no_deadline + other.skipped_no_deadline,
             skipped_race_not_found=self.skipped_race_not_found + other.skipped_race_not_found,
             skipped_missing_value=self.skipped_missing_value + other.skipped_missing_value,
+            skipped_already_observed=self.skipped_already_observed
+            + other.skipped_already_observed,
         )
 
 
@@ -740,6 +743,92 @@ def load_odds_day(
                     observed_at=observed_at,
                     available_at=observed_at,
                     is_closing=True,
+                    source_id=source_id,
+                )
+            )
+            stats.snapshots += 1
+
+    return stats
+
+
+def load_odds_observation(
+    session: Session,
+    venue_code: str,
+    race_date: dt.date,
+    race_number: int,
+    race_odds: RaceOdds,
+    observed_at: dt.datetime,
+) -> OddsLoadStats:
+    """Load one *live* odds reading, taken before the deadline.
+
+    The counterpart to `load_odds_day`, and deliberately not the same
+    function. That one exists to load the archived 締切時オッズ, where
+    exactly one observation per race is ever published: it accepts only
+    `is_closing` pages, stamps them with the deadline because the page
+    carries no time of its own, and replaces the race's snapshots so a
+    re-load cannot duplicate them.
+
+    None of that holds for a reading taken while betting is still open:
+
+    - The page is *not* closing, which is the point. Rejecting it here
+      would reject every observation this function exists to record.
+    - `observed_at` is the moment of the fetch, which the caller knows
+      exactly. That is what makes the reading leakage-safe to use for a
+      decision made after it: unlike the archived odds, whose
+      `available_at` is the deadline itself, these are available while
+      there is still time to act on them.
+    - Snapshots accumulate rather than replace, so a race ends up with
+      the time series the archive can never provide.
+
+    Idempotent by `(race_id, bet_type, combination, observed_at)`: a
+    re-run at the same `observed_at` leaves the row count unchanged.
+    Give `observed_at` as an aware datetime; the caller decides the
+    capture schedule.
+    """
+    stats = OddsLoadStats()
+    venue = _venue(session, venue_code)
+    race = session.scalar(
+        select(Race).where(
+            Race.race_date == race_date,
+            Race.venue_id == venue.id,
+            Race.race_number == race_number,
+        )
+    )
+    if race is None:
+        stats.skipped_race_not_found += 1
+        return stats
+
+    source_id = _source_id(session, SOURCE_ODDS)
+    for entry in race_odds.entries:
+        combination = str(entry.lane_number)
+        for bet_type, value in (
+            ("win", entry.win_odds),
+            ("place_low", entry.place_odds_low),
+            ("place_high", entry.place_odds_high),
+        ):
+            if value is None:
+                stats.skipped_missing_value += 1
+                continue
+            existing = session.scalar(
+                select(OddsSnapshot).where(
+                    OddsSnapshot.race_id == race.id,
+                    OddsSnapshot.bet_type == bet_type,
+                    OddsSnapshot.combination == combination,
+                    OddsSnapshot.observed_at == observed_at,
+                )
+            )
+            if existing is not None:
+                stats.skipped_already_observed += 1
+                continue
+            session.add(
+                OddsSnapshot(
+                    race_id=race.id,
+                    bet_type=bet_type,
+                    combination=combination,
+                    odds=value,
+                    observed_at=observed_at,
+                    available_at=observed_at,
+                    is_closing=race_odds.is_closing,
                     source_id=source_id,
                 )
             )

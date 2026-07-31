@@ -96,6 +96,26 @@ def _fetch(url: str, opener: object | None) -> str:
         raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
 
 
+def fetch_odds_page(
+    target_date: date,
+    venue_code: str,
+    race_number: int,
+    *,
+    opener: object | None = None,
+) -> str:
+    """Fetch one race's odds page and return its raw HTML.
+
+    `fetch_range` writes pages to disk for a bulk archive run; this
+    returns the page instead, for a caller that wants to parse it now --
+    `db.capture_odds`, which records live pre-deadline readings and has
+    no reason to keep a file per observation.
+
+    Applies no delay of its own: the caller owns the pacing, because it
+    is the caller that knows how many pages it is about to request.
+    """
+    return _fetch(odds_url(target_date, venue_code, race_number), opener=opener)
+
+
 def fetch_racing_venues(target_date: date, *, opener: object | None = None) -> tuple[str, ...]:
     """Return the venue codes that raced on `target_date`, read from the
     official daily index. One request per day, which avoids blindly
