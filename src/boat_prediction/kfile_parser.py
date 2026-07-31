@@ -29,10 +29,13 @@ sample would be guessing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 _VENUE_BEGIN_RE = re.compile(r"^(\d{2})KBGN\s*$")
 _RACE_HEADER_RE = re.compile(r"^\s*(\d{1,2})R\s")
+# "中止" is written with an embedded ideographic space in real files
+# ("中　止"), so the marker is matched after stripping U+3000.
+_CANCELLED_MARKER = "中止"
 _PAYOUT_LABELS = frozenset({"単勝", "複勝", "２連単", "２連複", "拡連複", "３連単", "３連複"})
 
 
@@ -68,6 +71,13 @@ class ParsedRace:
     race_number: int
     entries: list[RaceEntryResult] = field(default_factory=list)
     payouts: list[RacePayout] = field(default_factory=list)
+    is_cancelled: bool = False
+    """True when the file marks this race 中止 (called off, typically
+    weather). Such a race legitimately has no entries and no payouts, so
+    without this flag it is indistinguishable from a parse failure — and
+    it must be excluded from training rather than counted as a data
+    quality defect. Found by validating the parser across the full
+    2005-2026 archive, where whole venue-days appear cancelled."""
 
 
 @dataclass(frozen=True)
@@ -174,15 +184,19 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
     current_races: dict[int, ParsedRace] = {}
     current_race: ParsedRace | None = None
     current_payout_label: str | None = None
+    cancelled_races: set[int] = set()
 
     def flush_venue() -> None:
         if current_venue_code is not None:
-            venues.append(
-                ParsedVenueDay(
-                    venue_code=current_venue_code,
-                    races=[current_races[number] for number in sorted(current_races)],
-                )
-            )
+            races = []
+            for number in sorted(current_races):
+                race = current_races[number]
+                if number in cancelled_races:
+                    # `replace` keeps the shared entries/payouts lists, so
+                    # nothing parsed into them is lost by re-stamping the flag
+                    race = replace(race, is_cancelled=True)
+                races.append(race)
+            venues.append(ParsedVenueDay(venue_code=current_venue_code, races=races))
 
     for line in text.splitlines():
         venue_match = _VENUE_BEGIN_RE.match(line.strip())
@@ -192,12 +206,15 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
             current_races = {}
             current_race = None
             current_payout_label = None
+            cancelled_races = set()
             continue
 
         header_match = _RACE_HEADER_RE.match(line)
         if header_match:
             race_number = int(header_match.group(1))
             current_race = current_races.setdefault(race_number, ParsedRace(race_number=race_number))
+            if _CANCELLED_MARKER in line.replace("　", ""):
+                cancelled_races.add(race_number)
             current_payout_label = None
             continue
 

@@ -67,6 +67,24 @@ SAMPLE_TEXT = """STARTK
 FINALK
 """
 
+# A venue whose whole day was called off. Structure copied from real
+# cancelled venue-days found while validating the parser across the full
+# 2005-2026 archive (e.g. 2013-04-06 Wakamatsu): the races appear only as
+# 中止 lines inside the payout block, with no entry rows at all. Note the
+# embedded ideographic space in "中　止", exactly as the real files write it.
+SAMPLE_CANCELLED_TEXT = """STARTK
+20KBGN
+若　松［成績］      4/ 6      サンプル中止
+
+   [払戻金]       ３連単           ３連複           ２連単         ２連複
+           1R  中　止
+           2R  中　止
+           3R  中　止
+
+20KEND
+FINALK
+"""
+
 
 class ParseKFileTextTest(unittest.TestCase):
     def test_rejects_empty_text(self) -> None:
@@ -166,6 +184,53 @@ class ParseKFileTextTest(unittest.TestCase):
 
         self.assertEqual(len(wide_quinella), 3)
         self.assertEqual([p.combination for p in wide_quinella], ["1-2", "1-3", "2-3"])
+
+
+class CancelledRaceTest(unittest.TestCase):
+    """A cancelled race legitimately has no entries, which without an
+    explicit flag is indistinguishable from a parse failure — and it must
+    be excluded from training rather than counted as a quality defect."""
+
+    def test_cancelled_races_are_flagged(self) -> None:
+        venues = parse_k_file_text(SAMPLE_CANCELLED_TEXT)
+
+        self.assertEqual(len(venues), 1)
+        races = venues[0].races
+        self.assertEqual([r.race_number for r in races], [1, 2, 3])
+        self.assertTrue(all(r.is_cancelled for r in races))
+
+    def test_cancelled_races_have_no_entries_and_no_payouts(self) -> None:
+        venues = parse_k_file_text(SAMPLE_CANCELLED_TEXT)
+
+        for race in venues[0].races:
+            self.assertEqual(race.entries, [])
+            self.assertEqual(race.payouts, [])
+
+    def test_normal_races_are_not_flagged_cancelled(self) -> None:
+        venues = parse_k_file_text(SAMPLE_TEXT)
+
+        for venue in venues:
+            for race in venue.races:
+                self.assertFalse(race.is_cancelled, f"{venue.venue_code} R{race.race_number}")
+
+    def test_flag_defaults_to_false_so_existing_callers_are_unaffected(self) -> None:
+        from boat_prediction.kfile_parser import ParsedRace
+
+        self.assertFalse(ParsedRace(race_number=1).is_cancelled)
+
+    def test_cancellation_does_not_discard_anything_already_parsed(self) -> None:
+        # guards the dataclasses.replace() re-stamp: a race that somehow
+        # carries both a 中止 marker and real entries must keep the entries
+        mixed = SAMPLE_CANCELLED_TEXT.replace(
+            "           3R  中　止",
+            "           3R  中　止\n  01  1 1001 山　田　　太　郎 10   11  6.70   1    0.10     1.48.0",
+        )
+
+        venues = parse_k_file_text(mixed)
+        race3 = next(r for r in venues[0].races if r.race_number == 3)
+
+        self.assertTrue(race3.is_cancelled)
+        self.assertEqual(len(race3.entries), 1)
 
 
 if __name__ == "__main__":
