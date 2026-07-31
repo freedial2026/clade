@@ -451,6 +451,44 @@ readings, whose `available_at` is genuinely earlier than the deadline.
 Watch for: the log grows one file per month with no pruning, and a day
 with no racing exits 1 on the 404 (visible in the log, not silent).
 
+## P0 re-run against real data: 100.00, train_or_predict (2026-07-31)
+
+`db/quality_audit.py` (new) measures the five axes `quality.py` scores.
+Nothing measured them before — P0 was validated on fixtures where the
+answer was known in advance. 19 checks, each reporting examined and
+defective counts so a score can be pointed at a query. An axis score is
+its weight times the **mean** pass rate of its checks, not a row-weighted
+average: a check over 7 M entry rows would otherwise drown out one over
+17,860 meetings.
+
+First run scored 99.94 and flagged three things. Two were the data
+telling the truth; one was a real defect.
+
+**Real:** 2,309 odds snapshots stored `0.00`. The page renders `0.0` for
+a boat with no quote and the parser took it literally. Odds include the
+stake, so 1.00 is the floor — and 1.00 is exactly the smallest real value
+among the 213,729 rows. A stored 0.0 is worse than a wrong number:
+market normalisation divides by it, so a missing quote becomes an
+*infinite* implied probability. Values below the floor now parse as
+absent; re-loading the archive left 211,420 snapshots and 2,672 skipped
+missing values.
+
+**Not defects:** 16 races have two boats on `finish_position=1` — 同着,
+verified on a real row (lanes 1 and 2, both status `01`). 132 races end
+with every boat carrying a status code (mostly `F`) and none a placing —
+a void race. The check demanded "exactly one winner" and called both
+wrong; it now asks a question with a right answer (a race that produced
+placings must have a first) and skips races that produced none.
+
+**Missing data, since fixed:** 168 races on 2021-12-21 had no card and
+no deadline — that day's B-file was absent from the transferred archive.
+It was still downloadable; `ingest_daily card --date 2021-12-21` loaded
+168 races and 1,008 entries.
+
+Second run: **100.00 / 100, every check passing.** The point_in_time
+axis in particular is clean across 6,983,370 entry rows — no card
+feature is available after its deadline.
+
 ## Next, in order
 
 1. ~~Full B/K load, fix deployment, five-day re-load, meeting
@@ -461,9 +499,13 @@ with no racing exits 1 on the 404 (visible in the log, not silent).
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
    `python -m boat_prediction.db.load_jma_archive` on the host — the
    jma/ pages are already transferred but nothing has loaded them yet.
-4. Re-run P0-P2 against the real loaded data (this is the step the
-   whole backlog has been waiting on; everything before it was
-   validated on synthetic fixtures).
+4. Re-run P1-P2 against the real loaded data. **P0 is done** (see
+   above, 100.00/100). P1 next needs a leakage-safe dataset builder
+   pulling `races` + `race_entries` + the winning lane out of the
+   database into `(X, y, dates)` for `walk_forward`/`model_comparison`;
+   no such builder exists yet. Note the scale: 1.15 M races x 6 lanes
+   will not fit in plain Python lists, so P1 should start on a recent
+   window rather than all 21 years.
 5. `motors`/`boats` tables: still on hold until a source with real
    service periods is found.
 6. Decide and build the fan-file DB table + loader (parser is done;
