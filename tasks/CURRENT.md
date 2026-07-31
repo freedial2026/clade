@@ -136,6 +136,47 @@ fields, and deciding how much of that to materialize as DB columns
 ever be used as a feature) is a real design call, not mechanical work
 like the JMA weather table was.
 
+## 直前情報 IS archived — earlier conclusion was wrong (2026-07-31)
+
+`tasks/HANDOFF.md`, `db/models.py` and `jma_weather_source.py` all
+recorded that BOATRACE's 直前情報 (exhibition time, tilt, parts
+replacement, start exhibition, surface weather) "is not archived
+anywhere officially, so it would need to be captured live going
+forward". **That is false.** `beforeinfo?rno=..&jcd=..&hd=..` serves
+past dates: verified against venue 04 on both 2026-07-30 and
+2025-07-31, returning fully populated data. The original mistake was
+probing a venue on a date it did not race, which returns an empty page
+shell indistinguishable from "no retention" — the same failure mode
+nearly repeated during this investigation.
+
+This is the single most valuable correction so far: exhibition time,
+tilt and the start-exhibition course order are the strongest genuinely
+pre-race signals available, and 進入変更 (course entry differing from
+lane assignment) is observable pre-race only here — exactly what
+`entry_course.py` (P3-T001) models.
+
+`src/boat_prediction/beforeinfo_source.py` (new) fetches and parses
+these pages; 23 tests. Structure was read off two real pages (one
+completed historical race, one same-day race before its exhibition run).
+
+**Leakage trap found and encoded.** The surface-weather block carries
+its own label in two forms:
+
+- `"NR時点"` — observed at race N; safe for race N+1 onward.
+- `"HH:MM現在"` — race 1 only (no previous race to reference). Fetched
+  from the archive this is the **day's latest** reading: on a real page,
+  race 1 (deadline 11:53) reported `17:43現在`, minutes after the final
+  race closed at 17:40. Using it would feed race 1 six hours of future
+  weather.
+
+`SurfaceWeather.is_safe_for_race()` returns True only for the first
+form with `N < race_number`. Per-boat exhibition values carry no such
+caveat — confirmed race-specific across races 1/6/12 of one venue-day.
+
+Not yet done: retention boundary not probed (do not assume
+`odds_source.EARLIEST_RETAINED_DATE`'s 2017-04-01 applies); no archive
+download run; no DB table or loader.
+
 ## Next, in order
 
 1. Confirm the full B/K load finished with `failed=0`, and investigate

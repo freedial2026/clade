@@ -55,10 +55,17 @@ meant inventing data that no available source provides.
    availability, not the pre-race exhibition time. The exhibition run
    happens before the race, but this project only learns of it from the
    post-race results file, so claiming pre-race availability would be a
-   leak. Real pre-race exhibition data needs live capture of BOATRACE's
-   直前情報 (open item in tasks/HANDOFF.md); until then
-   `feature_availability.py`'s gate will correctly refuse these values
-   for any pre-race `prediction_at`, and that is the intended behaviour.
+   leak, and `feature_availability.py`'s gate correctly refuses these
+   values for any pre-race `prediction_at`.
+
+   This is now superseded as the *only* route to exhibition data, but
+   remains correct for the K-file-derived rows: `beforeinfo_source.py`
+   fetches BOATRACE's 直前情報 pages, which do serve past dates and
+   carry genuinely pre-race exhibition times, tilt angles, parts
+   replacements and start-exhibition courses. Those need their own
+   table and loader (not yet built) with an `available_at` reflecting
+   real pre-race availability -- do not backfill them into this table,
+   whose availability semantics are deliberately results-time.
 
 6. **`race_meetings.meeting_end_date` is left NULL at load time.** It is
    derivable only by looking at later days of the same series, which is

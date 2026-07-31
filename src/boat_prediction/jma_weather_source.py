@@ -17,8 +17,12 @@ temperature, precipitation, wind speed/direction, sunshine, and (at some
 stations, and only from whenever that station added the sensor) humidity
 and dew point. It does **not** cover water temperature or wave height at
 a venue's own racecourse -- BOATRACE's own pre-race "直前情報" is the
-only source for those, and it is not archived anywhere officially, so it
-would need to be captured live going forward. Tide predictions for
+only source for those. (An earlier version of this note added that
+直前情報 "is not archived anywhere officially, so it would need to be
+captured live going forward". That was wrong -- see
+`beforeinfo_source.py`, which fetches past dates successfully. The
+mistake came from probing a venue on a date it did not race, which
+returns an empty page indistinguishable from no retention.) Tide predictions for
 coastal venues exist separately at `data.jma.go.jp/kaiyou/db/tide/`, but
 only from 2011 onward.
 
