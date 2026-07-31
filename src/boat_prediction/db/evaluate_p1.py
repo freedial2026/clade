@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,19 @@ def uniform_factory() -> _FixedDistribution:
 
 def lane_prior_factory() -> _FixedDistribution:
     return _FixedDistribution(lambda winners: LanePriorBaseline().fit(winners).predict())
+
+
+def per_race_log_loss(
+    y_true: Sequence[int], probs: Sequence[Sequence[float]], classes: Sequence[int]
+) -> list[float]:
+    """`metrics.multiclass_log_loss`'s per-row values rather than their
+    mean, for a subgroup breakdown (`evaluate_phase.py`) that needs one
+    score per race rather than one aggregate over the whole set. Same
+    epsilon floor as `multiclass_log_loss`, so the two agree exactly on
+    a full set's mean."""
+    eps = 1e-12
+    index = {c: i for i, c in enumerate(classes)}
+    return [-math.log(max(row[index[label]], eps)) for label, row in zip(y_true, probs)]
 
 
 class _AlignedProba:
