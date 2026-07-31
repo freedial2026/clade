@@ -154,6 +154,65 @@ def _cell_text(text: str) -> str | None:
     return text if text and text not in ("///", "--") else None
 
 
+# Column positions of each element in the two daily-value layouts, keyed
+# by how many data columns the row has. The two are the AMeDAS and the
+# weather-station-office tables this module's docstring already
+# distinguishes ("daily_a1.php" / "daily_s1.php", the latter "a superset
+# of elements") -- the difference had simply never reached the parser,
+# which read only the AMeDAS shape and rejected the other 1,554 of the
+# 6,216 archived pages.
+#
+# The office layout is not the AMeDAS one with columns appended: it
+# leads with two pressure readings, and it publishes no 最多風向 at all,
+# so that field is None for those stations rather than mis-read from the
+# neighbouring column. Both layouts end with 降雪/最深積雪, which nothing
+# here consumes, and the office one adds the two 天気概況 columns.
+#
+# Positions were read off real archived pages (venue 23 2005-11 for
+# AMeDAS, venue 15 2005-08 for the office layout) and checked against
+# their table headers; a sweep of all 6,216 pages found no third shape.
+_LAYOUTS = {
+    17: {
+        "precipitation_total_mm": 0,
+        "precipitation_max_1h_mm": 1,
+        "precipitation_max_10min_mm": 2,
+        "temperature_avg_c": 3,
+        "temperature_max_c": 4,
+        "temperature_min_c": 5,
+        "humidity_avg_pct": 6,
+        "humidity_min_pct": 7,
+        "wind_avg_ms": 8,
+        "wind_max_ms": 9,
+        "wind_max_direction": 10,
+        "wind_max_instant_ms": 11,
+        "wind_max_instant_direction": 12,
+        "wind_prevailing_direction": 13,
+        "sunshine_hours": 14,
+    },
+    20: {
+        "precipitation_total_mm": 2,
+        "precipitation_max_1h_mm": 3,
+        "precipitation_max_10min_mm": 4,
+        "temperature_avg_c": 5,
+        "temperature_max_c": 6,
+        "temperature_min_c": 7,
+        "humidity_avg_pct": 8,
+        "humidity_min_pct": 9,
+        "wind_avg_ms": 10,
+        "wind_max_ms": 11,
+        "wind_max_direction": 12,
+        "wind_max_instant_ms": 13,
+        "wind_max_instant_direction": 14,
+        "wind_prevailing_direction": None,
+        "sunshine_hours": 15,
+    },
+}
+
+_TEXT_FIELDS = frozenset(
+    {"wind_max_direction", "wind_max_instant_direction", "wind_prevailing_direction"}
+)
+
+
 def parse_daily_month_html(html: str, year: int, month: int) -> tuple[DailyWeather, ...]:
     from bs4 import BeautifulSoup
 
@@ -174,31 +233,22 @@ def parse_daily_month_html(html: str, year: int, month: int) -> tuple[DailyWeath
         day = int(day_link.get_text(strip=True))
         cells = tr.find_all("td")
         values = [c.get_text(strip=True) for c in cells[1:]]
-        if len(values) != 17:
+        layout = _LAYOUTS.get(len(values))
+        if layout is None:
             raise JmaWeatherSourceError(
-                f"expected 17 data columns for day {day}, got {len(values)}"
+                f"unrecognised daily-values layout for day {day}: "
+                f"{len(values)} data columns, expected one of {sorted(_LAYOUTS)}"
             )
 
-        rows.append(
-            DailyWeather(
-                date_iso=f"{year:04d}-{month:02d}-{day:02d}",
-                precipitation_total_mm=_cell_value(values[0]),
-                precipitation_max_1h_mm=_cell_value(values[1]),
-                precipitation_max_10min_mm=_cell_value(values[2]),
-                temperature_avg_c=_cell_value(values[3]),
-                temperature_max_c=_cell_value(values[4]),
-                temperature_min_c=_cell_value(values[5]),
-                humidity_avg_pct=_cell_value(values[6]),
-                humidity_min_pct=_cell_value(values[7]),
-                wind_avg_ms=_cell_value(values[8]),
-                wind_max_ms=_cell_value(values[9]),
-                wind_max_direction=_cell_text(values[10]),
-                wind_max_instant_ms=_cell_value(values[11]),
-                wind_max_instant_direction=_cell_text(values[12]),
-                wind_prevailing_direction=_cell_text(values[13]),
-                sunshine_hours=_cell_value(values[14]),
-            )
-        )
+        fields = {}
+        for name, index in layout.items():
+            if index is None:
+                fields[name] = None
+                continue
+            raw = values[index]
+            fields[name] = _cell_text(raw) if name in _TEXT_FIELDS else _cell_value(raw)
+
+        rows.append(DailyWeather(date_iso=f"{year:04d}-{month:02d}-{day:02d}", **fields))
     return tuple(rows)
 
 

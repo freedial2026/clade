@@ -51,6 +51,30 @@ SAMPLE_DAILY_HTML = """
 """
 
 
+# The weather-station-office layout: two pressure columns first, no
+# 最多風向 at all, and two 天気概況 columns at the end. 1,554 of the 6,216
+# archived pages are this shape.
+SAMPLE_OFFICE_DAILY_HTML = """
+<html><body>
+<table id="tablefix1" class="data2_s">
+<tr class="mtx"><th>日</th><th>気圧(hPa)</th></tr>
+<tr class="mtx" style="text-align:right;">
+<td style="white-space:nowrap"><div class="a_print"><a href="hourly_s1.php?day=1">1</a></div></td>
+<td class=data_0_0>1007.5</td><td class=data_0_0>1008.0</td>
+<td class=data_0_0>--</td><td class=data_0_0>--</td><td class=data_0_0>--</td>
+<td class=data_0_0>26.7</td><td class=data_0_0>30.7</td><td class=data_0_0>23.4</td>
+<td class=data_0_0>75</td><td class=data_0_0>53</td>
+<td class=data_0_0>1.5</td><td class=data_0_0>3.7</td><td class=data_0_0 style="text-align:center">北</td>
+<td class=data_0_0>6.4</td><td class=data_0_0 style="text-align:center">北北西</td>
+<td class=data_0_0>6.7</td>
+<td class=data_0_0></td><td class=data_0_0></td>
+<td class=data_0_0></td><td class=data_0_0></td>
+</tr>
+</table>
+</body></html>
+"""
+
+
 class StationTypeTest(unittest.TestCase):
     def test_four_digit_block_no_is_amedas(self) -> None:
         self.assertEqual(station_type("0351"), "a")
@@ -158,6 +182,48 @@ class ParseDailyMonthHtmlTest(unittest.TestCase):
     def test_raises_when_the_table_is_missing(self) -> None:
         with self.assertRaises(JmaWeatherSourceError):
             parse_daily_month_html("<html><body>no table here</body></html>", 2026, 6)
+
+    def test_reads_the_weather_station_office_layout(self) -> None:
+        # Not the AMeDAS layout with columns appended: the elements sit
+        # at different positions because two pressure columns lead it.
+        rows = parse_daily_month_html(SAMPLE_OFFICE_DAILY_HTML, 2005, 8)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].date_iso, "2005-08-01")
+        self.assertEqual(rows[0].temperature_avg_c, 26.7)
+        self.assertEqual(rows[0].temperature_max_c, 30.7)
+        self.assertEqual(rows[0].temperature_min_c, 23.4)
+        self.assertEqual(rows[0].humidity_avg_pct, 75.0)
+        self.assertEqual(rows[0].wind_avg_ms, 1.5)
+        self.assertEqual(rows[0].wind_max_ms, 3.7)
+        self.assertEqual(rows[0].wind_max_direction, "北")
+        self.assertEqual(rows[0].wind_max_instant_ms, 6.4)
+        self.assertEqual(rows[0].wind_max_instant_direction, "北北西")
+        self.assertEqual(rows[0].sunshine_hours, 6.7)
+
+    def test_office_layout_publishes_no_prevailing_wind_direction(self) -> None:
+        # Left None rather than mis-read from the neighbouring column,
+        # which is what makes the two layouts worth separating.
+        rows = parse_daily_month_html(SAMPLE_OFFICE_DAILY_HTML, 2005, 8)
+
+        self.assertIsNone(rows[0].wind_prevailing_direction)
+        self.assertEqual(
+            parse_daily_month_html(SAMPLE_DAILY_HTML, 2026, 6)[0].wind_prevailing_direction,
+            "南東",
+        )
+
+    def test_office_layout_dash_marker_parses_as_none(self) -> None:
+        rows = parse_daily_month_html(SAMPLE_OFFICE_DAILY_HTML, 2005, 8)
+
+        self.assertIsNone(rows[0].precipitation_total_mm)
+
+    def test_rejects_an_unrecognised_column_count(self) -> None:
+        truncated = SAMPLE_DAILY_HTML.replace(
+            "<td class=data_0_0>12.9</td><td class=data_0_0>///</td><td class=data_0_0>///</td>",
+            "<td class=data_0_0>12.9</td>",
+        )
+        with self.assertRaises(JmaWeatherSourceError):
+            parse_daily_month_html(truncated, 2026, 6)
 
 
 class FetchAllTest(unittest.TestCase):
