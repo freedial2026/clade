@@ -3,8 +3,8 @@
 .env.*
 !.env.example
 .claude/settings.local.json
-.claude/state/*.jsonl
-.claude/state/session-*
+**/.claude/state/*.jsonl
+**/.claude/state/session-*
 .claude/scheduled_tasks.lock
 .mcp.json
 
