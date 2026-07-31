@@ -420,6 +420,37 @@ Rollback material, all still on the host:
   rebuild is confirmed good, and note that `rebuild_meetings --apply`
   refuses to run again while it exists.
 
+## Daily capture running on .21 since 2026-07-31
+
+The archived odds are one observation per race stamped with the
+deadline, so nothing in them supports a decision made *before* betting
+closes. That cannot be fixed retroactively — the pre-deadline series was
+never published — so it is being built forward from here.
+
+Three cron jobs, all through `scripts/cron_job.sh` (sources `.env`, uses
+the venv, logs to `logs/cron-YYYYMM.log`, rotating monthly):
+
+| JST | Job | Why then |
+|---|---|---|
+| 06:30 | `ingest_daily card` | Before the day's first deadline; the earliest in the archive is 08:32. Without today's card there is no `scheduled_deadline_at` and capture does nothing. |
+| every 2 min, 08-21 | `capture_odds` | Captures each race 10 and 2 minutes before its deadline. A run with nothing due makes no request. |
+| 02:00 | `ingest_daily results` | After the last race settles. Defaults to yesterday. |
+
+Volume: ~300 requests per racing day, 3 s apart, never parallel — the
+same order as the archive fetch already done, and far below the site's
+large-volume threshold. Adding lead times multiplies it.
+
+Idempotency has no state outside the database: a capture round counts as
+done if a snapshot exists at or after that round's window opens, so
+overlapping runs, retries and restarts cannot double-record.
+
+`odds_snapshots.is_closing` now distinguishes the two sources — `true`
+for the 213,729 archived closing rows, `false` for live pre-deadline
+readings, whose `available_at` is genuinely earlier than the deadline.
+
+Watch for: the log grows one file per month with no pruning, and a day
+with no racing exits 1 on the 404 (visible in the log, not silent).
+
 ## Next, in order
 
 1. ~~Full B/K load, fix deployment, five-day re-load, meeting
