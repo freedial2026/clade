@@ -173,9 +173,56 @@ its own label in two forms:
 form with `N < race_number`. Per-boat exhibition values carry no such
 caveat — confirmed race-specific across races 1/6/12 of one venue-day.
 
-Not yet done: retention boundary not probed (do not assume
-`odds_source.EARLIEST_RETAINED_DATE`'s 2017-04-01 applies); no archive
-download run; no DB table or loader.
+### Retention probed (2026-07-31)
+
+Coverage does **not** start on a clean date — it was rolled out per
+venue during 2016. Racing-day/venue pairs were taken from the local
+K-file archive so no probe could repeat the "asked about a venue that
+did not race" mistake:
+
+| Date | Venues with 直前情報 |
+|---|---|
+| 2016-05-01 … 2016-06-20 | none |
+| 2016-06-26 | **2 of 13** (only venues 17, 23) |
+| 2016-07-15 | 11 of 11 |
+| 2016-08-01 / 08-15 / 09-14 / 12-15 / 2017-04-01 | all, every date |
+
+So: **full coverage from 2016-07-15 at the latest**, partial through
+late June 2016, nothing before. That is ~9 months *earlier* than
+`odds_source.EARLIEST_RETAINED_DATE` (2017-04-01) — the odds constant
+must not be reused for this source. A loader must tolerate per-venue
+gaps in the June-July 2016 window rather than treating them as
+failures.
+
+### Scale problem — full backfill is not proportionate
+
+A racing day is ~13 venues x 12 races ~= 150 pages. From 2016-07-15 to
+now is ~3,670 days, so a complete backfill is **~550,000 requests**, or
+about **19 days of continuous fetching** at the module's 3 s delay.
+That is squarely the "large-volume access" the site's policy prohibits,
+and it is not proportionate to the value.
+
+Calibration: the existing odds archive under `data/raw/boatrace/odds/`
+is only **80 days** (2025-07-29 … 2025-10-16, 11,951 files) — the full
+2017-2026 odds range was never fetched either, presumably for the same
+reason.
+
+Recommended staging (not yet approved or run):
+
+1. **Match the odds window** — 2025-07-29 … 2025-10-16, ~12,000 pages,
+   ~10 h at 3 s. This is the only window where odds *and* 直前情報 would
+   both exist, so it is what makes an end-to-end P2 test on real data
+   possible at all. Comparable in size to the odds fetch already done.
+2. **Daily incremental capture going forward** — ~150 pages/day, small
+   and sustainable, and the thing that actually matters for "races run
+   every day".
+3. **Extend backwards for P1 only if step 1 shows the features earn
+   their keep.** P1 (first-place probability) needs 直前情報 + K-file
+   results but no odds, so a wider window helps there independently.
+
+Not yet done: no archive download run; no DB table or loader. Do not
+backfill into `exhibition_entries` — see deviation 5 in
+`db/models.py`'s docstring.
 
 ## Next, in order
 
