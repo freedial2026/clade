@@ -159,18 +159,22 @@ _CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "validity",
         "odds_are_quotable",
-        "odds include the stake, so 1.00 is the floor; a stored 0 would "
-        "become an infinite implied probability, not a missing one",
+        (
+            "odds include the stake, so 1.00 is the floor; a stored 0 would "
+            "become an infinite implied probability, not a missing one"
+        ),
         "SELECT count(*) FROM odds_snapshots",
         "SELECT count(*) FROM odds_snapshots WHERE odds < 1.0",
     ),
     (
         "consistency",
         "a_race_that_produced_placings_has_a_first",
-        "not 'exactly one winner': 同着 is real (16 races have two boats "
-        "on finish_position 1) and so is a void race where every boat "
-        "carries a status code and none a placing (132 races, mostly F). "
-        "The defect is placings that skip first place",
+        (
+            "not 'exactly one winner': 同着 is real (16 races have two boats "
+            "on finish_position 1) and so is a void race where every boat "
+            "carries a status code and none a placing (132 races, mostly F). "
+            "The defect is placings that skip first place"
+        ),
         """SELECT count(*) FROM race_results res
            JOIN races r ON r.id = res.race_id
            WHERE r.status = 'finished'
@@ -247,9 +251,11 @@ _CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "point_in_time",
         "weather_is_not_available_before_its_day",
-        "a daily summary never predates the day it summarizes "
-        "(the loader puts it at the following midnight JST; this is the "
-        "portable half of that, and the direction leakage would take)",
+        (
+            "a daily summary never predates the day it summarizes "
+            "(the loader puts it at the following midnight JST; this is the "
+            "portable half of that, and the direction leakage would take)"
+        ),
         "SELECT count(*) FROM weather_observations",
         "SELECT count(*) FROM weather_observations WHERE available_at < weather_date",
     ),
