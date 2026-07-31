@@ -37,6 +37,14 @@ RM_MONTHLY_LIMIT_REACHED = "RM_MONTHLY_LIMIT_REACHED"
 # EV below threshold -> abstain") has no listed code to match it — added
 # here to fill that documented gap.
 EV_CONSERVATIVE_BELOW_THRESHOLD = "EV_CONSERVATIVE_BELOW_THRESHOLD"
+# Also not in §15.1, same precedent. Emitted by `odds_deviation.py` when
+# actual closing odds diverge sharply from what pre-race features
+# predicted. Distinct from OD_ODDS_SHARP_CHANGE above, which describes
+# odds *moving* over time and needs an odds time series — unavailable
+# historically, since only one closing observation per race is retained
+# (see odds_source.py). Owned here rather than in odds_deviation.py so
+# reason codes have a single home.
+OD_ODDS_UNEXPECTED_VS_MODEL = "OD_ODDS_UNEXPECTED_VS_MODEL"
 
 REASON_CODES: frozenset[str] = frozenset(
     {
@@ -55,6 +63,7 @@ REASON_CODES: frozenset[str] = frozenset(
         RM_DAILY_LIMIT_REACHED,
         RM_MONTHLY_LIMIT_REACHED,
         EV_CONSERVATIVE_BELOW_THRESHOLD,
+        OD_ODDS_UNEXPECTED_VS_MODEL,
     }
 )
 
@@ -102,9 +111,21 @@ def evaluate_abstention(
     odds_found: bool,
     model_disagreement: float | None,
     conservative_ev: float | None,
+    extra_reason_codes: tuple[str, ...] = (),
 ) -> AbstentionDecision:
     """Missing (`None`) inputs each contribute their own abstain reason
-    rather than being silently skipped or defaulted to a passing value."""
+    rather than being silently skipped or defaulted to a passing value.
+
+    `extra_reason_codes` merges in codes produced by a separate check
+    that this function does not itself compute — currently
+    `odds_deviation.deviation_abstention_reasons()`. They are validated
+    against `REASON_CODES` so a typo cannot silently create a decision
+    with an unrecognized reason, and they are deduplicated against the
+    codes raised here rather than appended blindly."""
+    unknown = tuple(code for code in extra_reason_codes if code not in REASON_CODES)
+    if unknown:
+        raise AbstentionError(f"unknown reason code(s): {unknown}")
+
     reasons: list[str] = []
 
     if data_quality_score is None:
@@ -125,6 +146,7 @@ def evaluate_abstention(
     elif conservative_ev < thresholds.min_conservative_ev:
         reasons.append(EV_CONSERVATIVE_BELOW_THRESHOLD)
 
+    reasons.extend(extra_reason_codes)
     unique_reasons = tuple(dict.fromkeys(reasons))
     return AbstentionDecision(
         abstain=bool(unique_reasons),

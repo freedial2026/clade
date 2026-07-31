@@ -23,6 +23,7 @@ dev = [
 ]
 official-data = [
     "pylhasa",
+    "beautifulsoup4",
 ]
 
 [build-system]
