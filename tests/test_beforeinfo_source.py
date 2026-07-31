@@ -21,6 +21,7 @@ from boat_prediction.beforeinfo_source import (
     beforeinfo_url,
     fetch_range,
     parse_beforeinfo,
+    venues_from_odds_archive,
 )
 
 
@@ -316,6 +317,47 @@ class FetchRangeTest(unittest.TestCase):
                 Path(tmp),
                 venues_for_date=lambda _d, opener=None: ("04",),
             )
+
+
+class VenuesFromOddsArchiveTest(unittest.TestCase):
+    def test_reads_the_venue_list_the_odds_fetch_already_wrote(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            day = root / "20250801"
+            day.mkdir()
+            (day / "_venues.txt").write_text("04\n24\n12", encoding="utf-8")
+
+            lookup = venues_from_odds_archive(root)
+
+            self.assertEqual(lookup(dt.date(2025, 8, 1)), ("04", "24", "12"))
+
+    def test_a_day_the_odds_archive_does_not_cover_yields_no_venues(self) -> None:
+        # Lets a range wider than the odds archive skip uncovered days
+        # rather than fail -- see the function's docstring.
+        with TemporaryDirectory() as tmp:
+            lookup = venues_from_odds_archive(Path(tmp))
+
+            self.assertEqual(lookup(dt.date(2025, 8, 1)), ())
+
+
+class FetchRangeVenueLookupTest(unittest.TestCase):
+    def test_skips_days_with_no_venues_without_making_requests(self) -> None:
+        def exploding_opener(*_args, **_kwargs):  # pragma: no cover - must not run
+            raise AssertionError("no request should be made for an uncovered day")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            written = fetch_range(
+                dt.date(2025, 8, 1),
+                dt.date(2025, 8, 3),
+                root / "dest",
+                venues_for_date=lambda _d, opener=None: (),
+                opener=exploding_opener,
+                sleep=lambda _s: None,
+                log=lambda _m: None,
+            )
+
+            self.assertEqual(written, 0)
 
 
 if __name__ == "__main__":

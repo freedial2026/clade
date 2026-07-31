@@ -63,14 +63,23 @@ Requires the `official-data` extra (`beautifulsoup4`).
 
 from __future__ import annotations
 
+import argparse
 import re
 import time
 import urllib.request
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .race_id import VALID_VENUE_CODES
+
+DEFAULT_DEST_DIR = Path("data/raw/boatrace/beforeinfo")
+DEFAULT_ODDS_ARCHIVE_DIR = Path("data/raw/boatrace/odds")
+
+# Race days are defined in JST throughout this project (see
+# `db/loader.py`), so "yesterday" must not depend on the host's clock.
+JST = ZoneInfo("Asia/Tokyo")
 
 BEFOREINFO_URL = (
     "https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={hd}"
@@ -470,3 +479,68 @@ def fetch_range(
         log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
         current = date.fromordinal(current.toordinal() + 1)
     return written
+
+
+def venues_from_odds_archive(odds_root: Path = DEFAULT_ODDS_ARCHIVE_DIR) -> object:
+    """Build a `venues_for_date` callable that reads the venue list
+    `odds_source.fetch_range` already wrote to `_venues.txt`.
+
+    Preferred over re-fetching the daily index: it costs zero requests,
+    and it guarantees this archive covers exactly the same venue set as
+    the odds archive, which is what makes the two joinable per race.
+    Days with no marker yield no venues, so a range wider than the odds
+    archive simply skips the uncovered days instead of failing.
+    """
+
+    def lookup(target_date: date, opener: object | None = None) -> tuple[str, ...]:
+        marker = odds_root / target_date.strftime("%Y%m%d") / "_venues.txt"
+        if not marker.is_file():
+            return ()
+        return tuple(v for v in marker.read_text(encoding="utf-8").split() if v)
+
+    return lookup
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Download 直前情報 pages for a date range.")
+    parser.add_argument("--start-date", type=date.fromisoformat, required=True)
+    parser.add_argument("--end-date", type=date.fromisoformat, default=None)
+    parser.add_argument("--dest-dir", type=Path, default=DEFAULT_DEST_DIR)
+    parser.add_argument(
+        "--odds-archive",
+        type=Path,
+        default=DEFAULT_ODDS_ARCHIVE_DIR,
+        help="read each day's racing venues from this archive's _venues.txt (no extra requests)",
+    )
+    parser.add_argument(
+        "--delay-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_DELAY_SECONDS,
+        help="minimum 1.0; the site's policy prohibits large-volume access",
+    )
+    parser.add_argument(
+        "--yesterday",
+        action="store_true",
+        help="ignore --start-date/--end-date and fetch only yesterday (for a daily cron): "
+        "yesterday's pages are complete and no longer changing, unlike today's",
+    )
+    args = parser.parse_args(argv)
+
+    if args.yesterday:
+        start = end = datetime.now(JST).date() - timedelta(days=1)
+    else:
+        start, end = args.start_date, args.end_date or args.start_date
+
+    written = fetch_range(
+        start,
+        end,
+        args.dest_dir,
+        venues_for_date=venues_from_odds_archive(args.odds_archive),
+        delay_seconds=args.delay_seconds,
+    )
+    print(f"done: {written} pages written into {args.dest_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
