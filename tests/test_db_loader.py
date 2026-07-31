@@ -288,6 +288,110 @@ class LoadBFileDayTest(unittest.TestCase):
             race = session.scalar(select(Race))
             self.assertEqual(race.series_day, 3)
 
+    def _load_days(self, session, days: list[tuple[dt.date, int]]) -> None:
+        """Load one venue's consecutive race days as (date, series_day)."""
+        for race_date, series_day in days:
+            loader.load_b_file_day(
+                session,
+                race_date,
+                [_venue_card(series_day=series_day, meeting_date=race_date)],
+            )
+            session.flush()
+
+    def test_a_postponed_day_stays_in_the_same_meeting(self) -> None:
+        # Venue 24, 2005-09: 第5日 ran on three consecutive dates. Deriving
+        # the key as date - (series_day - 1) made three meetings of one 節.
+        with Session(self.engine) as session:
+            self._load_days(
+                session,
+                [
+                    (dt.date(2005, 9, 3), 3),
+                    (dt.date(2005, 9, 4), 4),
+                    (dt.date(2005, 9, 5), 5),
+                    (dt.date(2005, 9, 6), 5),
+                    (dt.date(2005, 9, 7), 5),
+                ],
+            )
+            session.commit()
+
+            self.assertEqual(session.query(RaceMeeting).count(), 1)
+            meeting = session.scalar(select(RaceMeeting))
+            self.assertEqual(meeting.meeting_start_date, dt.date(2005, 9, 1))
+            self.assertTrue(
+                all(race.meeting_id == meeting.id for race in session.scalars(select(Race)))
+            )
+
+    def test_a_skipped_or_backwards_day_number_stays_in_the_same_meeting(self) -> None:
+        # Venue 03, 2007-07: 第1,2,2,3,4,6,5,6日 on consecutive dates.
+        with Session(self.engine) as session:
+            self._load_days(
+                session,
+                [
+                    (dt.date(2007, 7, 11), 1),
+                    (dt.date(2007, 7, 12), 2),
+                    (dt.date(2007, 7, 13), 2),
+                    (dt.date(2007, 7, 14), 3),
+                    (dt.date(2007, 7, 15), 4),
+                    (dt.date(2007, 7, 16), 6),
+                    (dt.date(2007, 7, 17), 5),
+                    (dt.date(2007, 7, 18), 6),
+                ],
+            )
+            session.commit()
+
+            self.assertEqual(session.query(RaceMeeting).count(), 1)
+            self.assertEqual(
+                session.scalar(select(RaceMeeting)).meeting_start_date, dt.date(2007, 7, 11)
+            )
+
+    def test_a_new_series_starting_the_next_day_gets_its_own_meeting(self) -> None:
+        # Consecutive 節 one day apart occur 173 times in the archive, so
+        # 第1日 must still open a new meeting.
+        with Session(self.engine) as session:
+            self._load_days(
+                session,
+                [
+                    (dt.date(2016, 3, 15), 4),
+                    (dt.date(2016, 3, 16), 5),
+                    (dt.date(2016, 3, 17), 1),
+                    (dt.date(2016, 3, 18), 2),
+                ],
+            )
+            session.commit()
+
+            starts = sorted(session.scalars(select(RaceMeeting.meeting_start_date)))
+            self.assertEqual(starts, [dt.date(2016, 3, 12), dt.date(2016, 3, 17)])
+
+    def test_a_new_meeting_never_reuses_an_existing_start_date(self) -> None:
+        # 第4日 on 03-16 estimates a 03-13 start, which the earlier 節
+        # already owns; reusing it would merge two different 節.
+        with Session(self.engine) as session:
+            self._load_days(session, [(dt.date(2016, 3, 13), 1), (dt.date(2016, 3, 14), 2)])
+            self._load_days(session, [(dt.date(2016, 3, 20), 1), (dt.date(2016, 3, 21), 2)])
+            self._load_days(session, [(dt.date(2016, 3, 25), 4)])
+            session.commit()
+
+            starts = sorted(session.scalars(select(RaceMeeting.meeting_start_date)))
+            self.assertEqual(len(starts), 3)
+            self.assertEqual(len(set(starts)), 3)
+
+    def test_reloading_a_day_keeps_the_meeting_it_already_belongs_to(self) -> None:
+        with Session(self.engine) as session:
+            self._load_days(
+                session, [(dt.date(2026, 6, 1), 1), (dt.date(2026, 6, 2), 2)]
+            )
+            session.commit()
+            before = session.scalar(select(Race.meeting_id).where(Race.race_date == RACE_DATE))
+
+            self._load_days(session, [(dt.date(2026, 6, 1), 1)])
+            session.commit()
+
+            self.assertEqual(session.query(RaceMeeting).count(), 1)
+            self.assertEqual(
+                session.scalar(select(Race.meeting_id).where(Race.race_date == RACE_DATE)),
+                before,
+            )
+
     def test_fixed_entry_flag_is_set_from_race_class_marker(self) -> None:
         with Session(self.engine) as session:
             loader.load_b_file_day(

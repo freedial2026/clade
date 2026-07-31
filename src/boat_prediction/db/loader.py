@@ -25,7 +25,7 @@ import datetime as dt
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..bfile_parser import ParsedVenueDayCard
@@ -34,6 +34,7 @@ from ..kfile_parser import ParsedVenueDay
 from ..odds_source import RaceOdds
 from ..race_id import VALID_VENUE_CODES
 from ..temporal import to_utc
+from .meeting_resolution import continues_meeting, resolve_new_meeting_start
 from .models import (
     RACE_STATUS_CANCELLED,
     RACE_STATUS_FINISHED,
@@ -260,21 +261,69 @@ def _resolve_racers(session: Session, cards: list[tuple[int, str]]) -> dict[int,
     return found
 
 
+def _previous_meeting(
+    session: Session, venue: Venue, race_date: dt.date
+) -> tuple[RaceMeeting, dt.date] | None:
+    """The venue's most recently raced meeting before `race_date`, with
+    the date of its last loaded race day."""
+    row = session.execute(
+        select(RaceMeeting, func.max(Race.race_date).label("last_race_date"))
+        .join(Race, Race.meeting_id == RaceMeeting.id)
+        .where(RaceMeeting.venue_id == venue.id, Race.race_date < race_date)
+        .group_by(RaceMeeting.id)
+        .order_by(func.max(Race.race_date).desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    meeting, last_race_date = row
+    if isinstance(last_race_date, str):  # SQLite returns DATE as text
+        last_race_date = dt.date.fromisoformat(last_race_date)
+    return meeting, last_race_date
+
+
+def _taken_meeting_starts(session: Session, venue: Venue) -> set[dt.date]:
+    return set(
+        session.scalars(
+            select(RaceMeeting.meeting_start_date).where(RaceMeeting.venue_id == venue.id)
+        )
+    )
+
+
 def _get_or_create_meeting(
     session: Session, venue: Venue, race_date: dt.date, card: ParsedVenueDayCard
 ) -> RaceMeeting | None:
+    """Attach one race day to its 節.
+
+    Not `race_date - (series_day - 1)`: see `meeting_resolution` for why
+    that arithmetic fragments 3% of 節.
+    """
     if card.series_day is None:
         return None
-    start = race_date - dt.timedelta(days=card.series_day - 1)
-    meeting = session.scalar(
-        select(RaceMeeting).where(
-            RaceMeeting.venue_id == venue.id, RaceMeeting.meeting_start_date == start
-        )
+
+    # Re-loading a day keeps the meeting its races already point at, so a
+    # re-run never re-groups days that a previous load (or a
+    # `rebuild_meetings` pass) already resolved.
+    existing = session.scalar(
+        select(RaceMeeting)
+        .join(Race, Race.meeting_id == RaceMeeting.id)
+        .where(Race.venue_id == venue.id, Race.race_date == race_date)
+        .limit(1)
     )
+    meeting = existing
+    if meeting is None:
+        previous = _previous_meeting(session, venue, race_date)
+        if previous is not None and continues_meeting(
+            card.series_day, race_date, previous[1]
+        ):
+            meeting = previous[0]
+
     if meeting is None:
         meeting = RaceMeeting(
             venue_id=venue.id,
-            meeting_start_date=start,
+            meeting_start_date=resolve_new_meeting_start(
+                race_date, card.series_day, _taken_meeting_starts(session, venue)
+            ),
             meeting_title=card.meeting_title,
             source_id=_source_id(session, SOURCE_B_FILE),
         )

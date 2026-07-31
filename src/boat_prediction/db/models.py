@@ -211,10 +211,12 @@ class Venue(TimestampMixin, Base):
 class RaceMeeting(TimestampMixin, Base):
     """One multi-day series (節) at one venue.
 
-    Identified by `(venue_id, meeting_start_date)`, derived from the
-    B-file day banner as `race_date - (series_day - 1)`: every day of
-    the same series computes the same start date, so re-loading any day
-    resolves to the same meeting without needing to look ahead.
+    Identified by `(venue_id, meeting_start_date)`. That start date is
+    exact for a 節 whose 第1日 was loaded and an estimate otherwise: it
+    is a key, not a claim, because the B-file's day counter repeats on
+    postponed days. Which meeting a race day belongs to is therefore
+    decided by `db.meeting_resolution`, not by arithmetic on the key --
+    see that module for the measurements behind the rule.
     """
 
     __tablename__ = "race_meetings"
