@@ -208,6 +208,60 @@ class RebuildMeetingsTest(unittest.TestCase):
             self.assertEqual(predicted.meetings_after, session.query(RaceMeeting).count())
             self.assertEqual(predicted.meetings_deleted, 2)
 
+    def test_a_cardless_day_does_not_split_the_series_around_it(self) -> None:
+        # 2021-12-21's B-file is missing from the archive, so 14 venues
+        # have a K-only day mid-節: 第1日, (hole), 第3日. Breaking the
+        # chain there fragmented 12 節 on .21.
+        with Session(self.engine) as session:
+            venue = self._seed(
+                session,
+                [(dt.date(2021, 12, 20), 1), (dt.date(2021, 12, 22), 3)],
+            )
+            session.add(
+                Race(
+                    venue_id=venue.id,
+                    meeting_id=None,
+                    race_date=dt.date(2021, 12, 21),
+                    race_number=1,
+                    series_day=None,
+                    status=RACE_STATUS,
+                )
+            )
+            session.commit()
+
+            rebuild_meetings(session, apply=True)
+            session.commit()
+
+            self.assertEqual(session.query(RaceMeeting).count(), 1)
+            self.assertIsNone(
+                session.scalar(
+                    select(Race.meeting_id).where(Race.race_date == dt.date(2021, 12, 21))
+                )
+            )
+
+    def test_a_cardless_day_before_a_first_day_does_not_merge_two_series(self) -> None:
+        with Session(self.engine) as session:
+            venue = self._seed(
+                session,
+                [(dt.date(2005, 9, 6), 5), (dt.date(2005, 9, 8), 1)],
+            )
+            session.add(
+                Race(
+                    venue_id=venue.id,
+                    meeting_id=None,
+                    race_date=dt.date(2005, 9, 7),
+                    race_number=1,
+                    series_day=None,
+                    status=RACE_STATUS,
+                )
+            )
+            session.commit()
+
+            rebuild_meetings(session, apply=True)
+            session.commit()
+
+            self.assertEqual(session.query(RaceMeeting).count(), 2)
+
     def test_is_idempotent(self) -> None:
         with Session(self.engine) as session:
             self._seed(session, self.POSTPONED)

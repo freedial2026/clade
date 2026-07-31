@@ -116,10 +116,19 @@ def plan_rebuild(
         previous_date: dt.date | None = None
         for key in keys:
             series_day = days[key]["series_day"]
-            starts_new = (
-                previous_date is None
-                or series_day is None
-                or not continues_meeting(series_day, key[1], previous_date)
+            if series_day is None:
+                # A day loaded from the K-file with no B-file card: it has
+                # no meeting and gains none here. It must not break the
+                # chain either, or the 節 around it fragments -- 12 of the
+                # 18 such days in the .21 database sit mid-節, with the day
+                # numbers either side running straight through the hole
+                # (第1日 then 第3日). Leaving `previous_date` alone makes
+                # the next carded day two days from the last one, which is
+                # inside the postponement window. Merging two different 節
+                # this way is not possible: a 第1日 still opens a new one.
+                continue
+            starts_new = previous_date is None or not continues_meeting(
+                series_day, key[1], previous_date
             )
             if starts_new and current:
                 groups.append(current)
