@@ -475,11 +475,22 @@ def load_k_file_day(
 
     for venue_day in venue_days:
         venue = _venue(session, venue_day.venue_code)
+        # A venue-day where *every* listed race is empty is a day that did
+        # not run, written without the 中止 marker: the section carries the
+        # 1R-12R payout table with no result at all and no race detail
+        # block. Exactly one such day exists in the 2005-2026 archive
+        # (venue 01, 2011-04-24, 第31回群馬テレビ杯 第1日). Treating it as
+        # cancelled costs nothing, while raising loses a whole day's load.
+        # A *single* empty race inside an otherwise populated day stays an
+        # error, because that shape really would indicate a parse defect.
+        day_produced_nothing = venue_day.races and all(
+            not race.entries and not race.payouts for race in venue_day.races
+        )
 
         for parsed_race in venue_day.races:
             race, _ = _get_or_create_race(session, venue, race_date, parsed_race.race_number)
 
-            if parsed_race.is_cancelled:
+            if parsed_race.is_cancelled or day_produced_nothing:
                 race.status = RACE_STATUS_CANCELLED
                 stats.races_cancelled += 1
                 # A cancelled race has no result to record. Any result

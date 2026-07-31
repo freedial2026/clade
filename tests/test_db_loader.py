@@ -355,10 +355,39 @@ class LoadKFileDayTest(unittest.TestCase):
             self.assertEqual(race.status, "cancelled")
             self.assertEqual(session.query(RaceResult).count(), 0)
 
-    def test_race_with_no_entries_payouts_or_cancellation_flag_raises(self) -> None:
+    def test_one_empty_race_among_populated_ones_raises(self) -> None:
+        # A hole inside a day that otherwise produced results is the parse
+        # defect the guard exists for.
         with Session(self.engine) as session, self.assertRaises(loader.LoaderError):
             loader.load_k_file_day(
-                session, RACE_DATE, [_k_venue(races=[_k_race(entries=[], payouts=[])])]
+                session,
+                RACE_DATE,
+                [
+                    _k_venue(
+                        races=[
+                            _k_race(race_number=1),
+                            _k_race(race_number=2, entries=[], payouts=[]),
+                        ]
+                    )
+                ],
+            )
+
+    def test_venue_day_with_no_results_at_all_is_treated_as_cancelled(self) -> None:
+        # Real shape of venue 01 on 2011-04-24: the 1R-12R payout table is
+        # present but empty, there is no race detail block, and the file
+        # carries no 中止 marker. The only such day in the 2005-2026
+        # archive, and the 5th failure of the .21 full load.
+        races = [
+            _k_race(race_number=number, entries=[], payouts=[]) for number in range(1, 13)
+        ]
+        with Session(self.engine) as session:
+            stats = loader.load_k_file_day(session, RACE_DATE, [_k_venue(races=races)])
+            session.commit()
+
+            self.assertEqual(stats.races_cancelled, 12)
+            self.assertEqual(session.query(RaceResult).count(), 0)
+            self.assertTrue(
+                all(race.status == "cancelled" for race in session.scalars(select(Race)))
             )
 
     def test_reloading_the_same_day_does_not_duplicate_results_or_payouts(self) -> None:
