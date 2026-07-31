@@ -12,12 +12,20 @@ were independent.
 Leakage
 -------
 
-Every feature comes from `race_entries`, which is the B-file race card,
-and each row's `available_at` is checked against its race's
+Every card feature comes from `race_entries` (the B-file), and each
+row's `available_at` is checked against its race's
 `scheduled_deadline_at` rather than assumed: the audit says the whole
 database satisfies it today, but a dataset builder that trusts that is
 one loader change away from silently training on the future. A race with
 any entry available too late is dropped and counted.
+
+The within-meeting form features below need the same discipline in a
+subtler place: they are built from *other races' results*, and a result
+is only available the day after its race (`loader.results_available_at`
+-- K-file carries no per-race confirmation time). Grouping by
+`race_date < this race's date` rather than `<=` is what keeps a same-day
+earlier race's result out of a later race's features on the same day;
+using `<=` would silently leak race 3's result into race 4's prediction.
 
 Rows the target cannot describe
 -------------------------------
@@ -31,10 +39,50 @@ Rows the target cannot describe
 Each exclusion is counted in `DatasetStats` so a shrinking dataset is
 visible rather than silent.
 
+Within-meeting form
+--------------------
+
+The motor and boat are drawn once per 節 and a racer keeps them for the
+whole series, so how that racer has been placing *earlier in this same
+meeting* is direct evidence about the actual equipment in this race --
+something the B-file's season-long `listed_*_second_rate` columns can
+only reflect with a lag. This was not computable until the 節 grouping
+fix (`meeting_resolution.py`): before it, 3% of 節 fragmented across a
+順延 boundary, silently truncating a racer's in-series history there.
+
+Tracked by `racer_id`, not lane number: a racer keeps the same lane
+across a 節's heats, but 準優勝戦/優勝戦 reseed by standing, so following
+the lane would attribute a different racer's form to this one after a
+reseed.
+
+A non-finish (any status code, not just a numeric placing) scores as the
+worst outcome (0.0), not as missing: a boat that could not finish is
+worse evidence than one that finished last, and treating it as absent
+would selectively delete the bad news. A day this meeting was cancelled
+naturally contributes nothing (no result row exists to score), with no
+special-case needed.
+
+Shrunk toward the racer's own season win rate with weight
+`MEETING_FORM_SHRINKAGE_STARTS`: on 第1日 there is no in-meeting history
+at all, and even by day 3 the sample is only 2-3 races, too few to trust
+on its own. The shrinkage constant is therefore never absent -- a race
+with zero prior starts still gets a defined feature, equal to the season
+prior.
+
+Series phase
+------------
+
+`race_phase.is_standing_seeded()` is appended once per race (not once per
+lane): 準優勝戦/優勝戦 assign lanes by 点率 standing while 予選 does not,
+so the same lane means something different in the two. A single shared
+column with per-class weights lets a multinomial model learn that
+difference itself (lane 1's coefficient on this column can differ from
+lane 6's), rather than the difference being encoded by hand.
+
 Scale
 -----
 
-1.15 M races x 54 float features do not fit in plain Python lists, so
+1.15 M races x 67 float features do not fit in plain Python lists, so
 `build_dataset` takes a date range and is meant to be pointed at a
 window. `docs/PROJECT_PROFILE.md` puts array libraries behind a "when
 justified by dataset size" gate; a recent window stays under it.
@@ -47,6 +95,8 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from ..race_phase import classify_race_phase, is_standing_seeded
 
 LANES = (1, 2, 3, 4, 5, 6)
 
@@ -62,11 +112,30 @@ FEATURE_NAMES = (
     "age",
     "weight",
     "class_rank",
+    "meeting_starts",
+    "meeting_form_score",
 )
+
+GLOBAL_FEATURE_NAMES = ("is_standing_seeded",)
 
 # A1 > A2 > B1 > B2 is an ordered grade, so it is encoded as an ordinal
 # rather than one-hot: the order is the information.
 _CLASS_RANK = {"A1": 4.0, "A2": 3.0, "B1": 2.0, "B2": 1.0}
+
+MEETING_FORM_SHRINKAGE_STARTS = 3.0
+"""Weight, in equivalent within-meeting starts, given to the season win
+rate prior. Chosen because a 節 is at most 9 racing days
+(quality_audit's `meetings_span_a_plausible_series`), so a racer is
+rarely more than a handful of starts into it -- 3 keeps the season prior
+dominant on 第1日-第3日 and lets in-meeting evidence take over by roughly
+the semifinal, without it ever being an arbitrary large number tuned to
+a single window."""
+
+MEETING_WINDOW_MARGIN_DAYS = 10
+"""How far before `start_date` the within-meeting-form query looks for a
+節's earlier days. A 節 spans at most 9 racing days (see above), so 10
+covers any meeting that started before the requested window without
+scanning the full archive."""
 
 
 @dataclass
@@ -94,6 +163,7 @@ class Dataset:
     X: list[list[float]]
     y: list[int]
     dates: list[dt.date]
+    phases: list[str]
     feature_names: list[str]
     stats: DatasetStats
 
@@ -102,12 +172,47 @@ class Dataset:
 
 
 def feature_columns() -> list[str]:
-    return [f"lane{lane}_{name}" for lane in LANES for name in FEATURE_NAMES]
+    columns = [f"lane{lane}_{name}" for lane in LANES for name in FEATURE_NAMES]
+    columns.extend(GLOBAL_FEATURE_NAMES)
+    return columns
 
 
 _ROW_SQL = """
+WITH meeting_window AS (
+    SELECT e.race_id AS mw_race_id,
+           e.lane_number AS mw_lane_number,
+           r.meeting_id AS mw_meeting_id,
+           e.racer_id AS mw_racer_id,
+           r.race_date AS mw_race_date,
+           CASE
+               WHEN rre.finish_position IS NOT NULL THEN (7.0 - rre.finish_position) / 6.0
+               WHEN rre.id IS NOT NULL THEN 0.0
+               ELSE NULL
+           END AS score
+      FROM race_entries e
+      JOIN races r ON r.id = e.race_id
+      LEFT JOIN race_results res ON res.race_id = r.id
+      LEFT JOIN race_result_entries rre
+             ON rre.race_result_id = res.id AND rre.lane_number = e.lane_number
+     WHERE r.meeting_id IS NOT NULL
+       AND r.race_date >= :meeting_window_start
+       AND r.race_date <= :end_date
+),
+meeting_form AS (
+    SELECT mw_race_id,
+           mw_lane_number,
+           COUNT(score) OVER w AS prior_starts,
+           AVG(score) OVER w AS prior_avg_score
+      FROM meeting_window
+    WINDOW w AS (
+        PARTITION BY mw_meeting_id, mw_racer_id
+        ORDER BY mw_race_date
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    )
+)
 SELECT r.id AS race_id,
        r.race_date,
+       r.race_class,
        e.lane_number,
        e.listed_national_win_rate,
        e.listed_national_second_rate,
@@ -118,6 +223,8 @@ SELECT r.id AS race_id,
        e.listed_age,
        e.listed_weight,
        e.listed_class,
+       mf.prior_starts,
+       mf.prior_avg_score,
        CASE WHEN e.available_at > r.scheduled_deadline_at THEN 1 ELSE 0 END AS too_late,
        (SELECT count(*) FROM race_result_entries re
          JOIN race_results res ON res.id = re.race_result_id
@@ -127,6 +234,7 @@ SELECT r.id AS race_id,
         WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_lane
   FROM races r
   JOIN race_entries e ON e.race_id = r.id
+  LEFT JOIN meeting_form mf ON mf.mw_race_id = r.id AND mf.mw_lane_number = e.lane_number
  WHERE r.status = 'finished'
    AND r.race_date >= :start_date
    AND r.race_date <= :end_date
@@ -138,11 +246,12 @@ SELECT r.id AS race_id,
 def _lane_features(row) -> list[float] | None:
     """One lane's slice, or None if anything it needs is missing.
 
-    Missing values are not imputed. A mean or zero would be indis-
-    tinguishable from a real reading to every model downstream, and the
-    audit shows the card fields are essentially always present -- so a
-    gap here is unusual enough to be worth dropping and counting rather
-    than papering over.
+    Season fields are not imputed: a mean or zero would be
+    indistinguishable from a real reading to every model downstream, and
+    the audit shows the card fields are essentially always present -- so
+    a gap here is unusual enough to be worth dropping and counting rather
+    than papering over. The within-meeting features never trigger a drop
+    here: shrinkage always defines them, even at zero prior starts.
     """
     values = [
         row.listed_national_win_rate,
@@ -159,13 +268,24 @@ def _lane_features(row) -> list[float] | None:
     rank = _CLASS_RANK.get((row.listed_class or "").strip())
     if rank is None:
         return None
-    return [float(v) for v in values] + [rank]
+
+    prior_starts = float(row.prior_starts or 0)
+    season_prior = float(row.listed_national_win_rate) / 10.0
+    if prior_starts > 0 and row.prior_avg_score is not None:
+        form_score = (
+            float(row.prior_avg_score) * prior_starts
+            + season_prior * MEETING_FORM_SHRINKAGE_STARTS
+        ) / (prior_starts + MEETING_FORM_SHRINKAGE_STARTS)
+    else:
+        form_score = season_prior
+
+    return [float(v) for v in values] + [rank, prior_starts, form_score]
 
 
 def build_dataset(
     session: Session, *, start_date: dt.date, end_date: dt.date
 ) -> Dataset:
-    """Pull `[start_date, end_date]` into `(X, y, dates)`.
+    """Pull `[start_date, end_date]` into `(X, y, dates, phases)`.
 
     Rows come back ordered by race date, which is what
     `walk_forward.generate_monthly_folds` expects to see.
@@ -177,16 +297,19 @@ def build_dataset(
     X: list[list[float]] = []
     y: list[int] = []
     dates: list[dt.date] = []
+    phases: list[str] = []
 
     current_race = None
     lanes: dict[int, list[float] | None] = {}
     race_date = None
+    race_phase = "unknown"
+    seeded = False
     winner_count = 0
     winner_lane = None
     too_late = False
 
     def flush() -> None:
-        nonlocal lanes, race_date, winner_count, winner_lane, too_late
+        nonlocal lanes, race_date, race_phase, seeded, winner_count, winner_lane, too_late
         if current_race is None:
             return
         stats.races_considered += 1
@@ -202,20 +325,30 @@ def build_dataset(
             row: list[float] = []
             for lane in LANES:
                 row.extend(lanes[lane])
+            row.append(1.0 if seeded else 0.0)
             X.append(row)
             y.append(int(winner_lane))
             dates.append(race_date)
+            phases.append(race_phase)
             stats.races_used += 1
         lanes = {}
         too_late = False
 
+    meeting_window_start = start_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
     for row in session.execute(
-        text(_ROW_SQL), {"start_date": start_date, "end_date": end_date}
+        text(_ROW_SQL),
+        {
+            "start_date": start_date,
+            "end_date": end_date,
+            "meeting_window_start": meeting_window_start,
+        },
     ):
         if row.race_id != current_race:
             flush()
             current_race = row.race_id
             race_date = row.race_date
+            race_phase = classify_race_phase(row.race_class)
+            seeded = is_standing_seeded(row.race_class)
             winner_count = int(row.winner_count or 0)
             winner_lane = row.winner_lane
         if row.too_late:
@@ -228,4 +361,6 @@ def build_dataset(
     # wrong thing on mixed types.
     dates = [dt.date.fromisoformat(d) if isinstance(d, str) else d for d in dates]
 
-    return Dataset(X=X, y=y, dates=dates, feature_names=feature_columns(), stats=stats)
+    return Dataset(
+        X=X, y=y, dates=dates, phases=phases, feature_names=feature_columns(), stats=stats
+    )
