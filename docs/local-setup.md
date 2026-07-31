@@ -32,6 +32,36 @@ git-ignored; never commit it. Variables read by `boat_prediction.config`:
 - `DATABASE_URL` — unset by default; only required once a task connects to a
   real database (PostgreSQL per `docs/PROJECT_PROFILE.md`).
 
+## Local PostgreSQL (for `src/boat_prediction/db/`)
+
+`docker-compose.yml` at the repo root brings up a disposable local
+Postgres 17 with fixed, non-secret dev credentials (published on
+`127.0.0.1` only) — needed for loading the B-file/K-file archives into
+the `races`/`race_entries`/... schema:
+
+```bash
+docker compose up -d db
+export DATABASE_URL=postgresql+psycopg2://boat:boat@localhost:5433/boat_prediction
+alembic upgrade head
+```
+
+Notes:
+
+- Port `5433` (not the Postgres default `5432`) so this never collides
+  with a Postgres you already run locally.
+- `alembic -x dialect=postgresql upgrade head --sql` renders the
+  PostgreSQL DDL without any running database — useful for reviewing a
+  migration before applying it, or in an environment with no Docker.
+- The database is rebuildable from scratch: every row it holds is
+  derived from the raw archives under `data/raw/boatrace/` (gitignored,
+  not committed) via `src/boat_prediction/db/loader.py`, so
+  `docker compose down -v` is always safe to run locally.
+- `src/boat_prediction/db/models.py`'s module docstring documents where
+  this schema deliberately deviates from
+  `docs/domain/.../implementation_guide.md` §7.2 and why (e.g. no
+  `motors`/`boats` tables yet — no source publishes their service
+  periods).
+
 ## Validation commands
 
 ```bash
