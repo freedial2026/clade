@@ -93,8 +93,53 @@ competing with it for the same PostgreSQL instance.
 **2026-07-31, mid-load: 2 failures appeared in the B/K run** (log line
 `2008-08: ... failed=2`, out of 2,554 files loaded so far). The run
 does not stop on a per-file failure by design (see `load_archive.py`'s
-docstring) and continues. Not yet investigated — do this as step 1
-below once the run finishes and the full failure list is in the log.
+docstring) and continues.
+
+**Cause found and fixed the same day, on this PC, without touching .21.**
+Exactly four archives in the 2005-2026 range hold the *same day* twice
+under names differing only in case (`K090406.TXT` + `k090406.txt`): a
+re-issue, not two days. `official_source.extract_k_file_text` required
+exactly one member and raised on them, losing four days of results:
+`k080706`, `k080713` (both 2008-07, and the only two before 2008-08 —
+they are the reported `failed=2`), `k090406`, `k090708`. **The full run
+should therefore end with `failed=4`, not `failed=0`.**
+
+`_select_archive_member` now resolves a same-name duplicate by
+preferring the larger member, which in all four cases is the modern
+layout matching the neighbouring days; archives holding genuinely
+different files are still rejected. In `k080706` venue 05 race 9 the
+older copy yields `exhibition_time=0.0` for a 欠場 (K0) row where the
+modern one correctly yields `None`, so the choice is not cosmetic.
+Verified by re-extracting and parsing every archive: **K 7,863/7,863
+and B 7,862/7,862, 0 failures.**
+
+After redeploying to .21, re-running `load_archive` for those four days
+is enough — the ledger makes it idempotent.
+
+**A 5th failure exists, and it is a different bug.** The host log shows
+`failed` reaching 5 at 2011-05, one more than the four duplicate-member
+archives. Reproduced locally against SQLite (2011-01..05; the month
+alone does not trigger it, so it is state-dependent):
+
+```
+K/201104/k110424.lzh: venue 01 race 1 on 2011-04-24 has no entries,
+no payouts and no cancellation flag, which indicates a parse defect
+```
+
+Venue 01's section that day carries the 1R-12R payout table with every
+row blank, no race detail block at all, and **no 中止 marker** — a day
+that did not run, written without saying so. The parser builds 12 empty
+races from the payout table rows and `load_k_file_day`'s parse-defect
+guard rejects the file.
+
+`load_k_file_day` now treats a venue-day whose races are *all* empty as
+cancelled, while a single empty race inside an otherwise populated day
+still raises — that shape really would be a parse defect. Exactly one
+venue-day in the 97,079 in the archive has this shape, so the tolerance
+is as narrow as the evidence.
+
+**So the full 21-year load ends with `failed=5`, and all five are now
+explained and fixed.**
 
 ## fan-file parser done locally (2026-07-31), table/loader not yet built
 
@@ -224,10 +269,114 @@ Not yet done: no archive download run; no DB table or loader. Do not
 backfill into `exhibition_entries` — see deviation 5 in
 `db/models.py`'s docstring.
 
+## 節 structure measured; `race_phase.py` added (2026-07-31)
+
+Full sweep of the K-file archive (7,863 files, 97,079 venue-days,
+17,870 節) to settle how a 節 is actually shaped:
+
+- **Essentially every 節 ends in a final.** 99.76% of 節 containing no
+  cancelled or empty day carry one; the rest are 順延 artefacts of the
+  sweep's own day-grouping, not missing finals.
+- 節 length: 6日 54.8%, 5日 21.4%, 4日 17.8%, 7日 4.6%.
+- The final is 12R 96.7% of the time, 11R 2.3%.
+- **準優 is not universal**: present in 96.9% of 6-day 節 but only
+  **50.7% of 4-day 節**, which use 選抜戦 instead. Series shape must not
+  be assumed from 第N日 alone.
+- 3 semifinals is the norm (86.1%).
+
+`src/boat_prediction/race_phase.py` (new) classifies `races.race_class`
+into trial / qualifier / semifinal / final / selection / general /
+unknown. It exists because `== "優勝戦"` misses 1% of finals: they are
+named after the event (王将位決定戦, 海の王者決定戦, ファイナル) or
+truncated by the fixed-width label field to a bare 優 (`サントリー優`).
+The traps it encodes — 準優勝戦 contains 優勝, 準優 ends in 優,
+順位決定戦 (475 races) is not a final, 準々優勝戦/準優進出戦 qualify
+*into* a round — all come from the 1,675 distinct labels in that sweep.
+
+Why it matters: lanes are assigned by 点率 standing in 準優/優勝戦 and
+arbitrarily in 予選, so boat 1 does not mean the same thing in both.
+`is_standing_seeded()` marks that split.
+
+Deliberately title-only: "last race of the last day" would be a far
+better signal but is future knowledge for any race inside the 節 —
+the same reason `RaceMeeting.meeting_end_date` is NULL by design.
+Ambiguous labels return `unknown` rather than a guess (8.0% of races,
+mostly venue marketing names like ドリーム戦/ランチタイム).
+
+Not yet done: nothing consumes `race_phase` yet. It is a pure function
+over an existing column, so wiring it into features needs no migration.
+
+## RaceMeeting key derivation is wrong for 3% of 節 (2026-07-31)
+
+Investigated on the **B-file** archive, which is what `db/loader.py`
+actually reads (7,862 files, 97,116 venue-days, 17,852 節).
+
+`_get_or_create_meeting` derives `meeting_start_date = race_date -
+(series_day - 1)` ([loader.py:268](../src/boat_prediction/db/loader.py)).
+That assumes `series_day` advances by exactly one per calendar day.
+**It does not.** The B-file is a race card published before the day, so
+a 順延 (postponed) day still ships a full card, and the day counter
+repeats — or skips, or goes backwards:
+
+```
+venue 09, クイーンカップ 2005-09     venue 24, 2005-09
+  09-06 第1日   -> key 09-06          09-04 第4日 -> key 09-01
+  09-07 第1日   -> key 09-07          09-05 第5日 -> key 09-01
+  09-08 第3日   -> key 09-06          09-06 第5日 -> key 09-02
+  09-09 第3日   -> key 09-07          09-07 第5日 -> key 09-03
+  09-10 第4日   -> key 09-07
+```
+
+Measured effect: **541 節 (3.03%) split across 2-4 `RaceMeeting` rows**,
+producing 18,450 rows for 17,852 節. Every split traces to a repeated,
+skipped or non-monotonic `series_day`. No case was found where two
+genuinely different 節 collapse into one row, so the failure mode is
+fragmentation only, never conflation.
+
+Why it matters: any "earlier in this 節" feature (motor/boat drawn for
+the series, racer form within it) silently truncates at the 順延
+boundary for those 節. Nothing consumes `meeting_id` yet, so the defect
+is latent — but it must be fixed before P0 features use it.
+
+**Fixed locally (2026-07-31); not yet applied to .21.**
+`db/meeting_resolution.py` (new) holds the rule, shared by the loader
+and the repair script so they cannot drift: reuse the venue's most
+recent meeting when `series_day != 1` and the gap since its last loaded
+race day is <= 3 days; otherwise open a new one keyed
+`race_date - (series_day - 1)`, moved forward past any start date the
+venue already uses. Only already-loaded days are consulted, so no future
+knowledge enters. The archive replay reproduced all 17,852 節 with 0
+collisions.
+
+Two accepted caveats: it is order-dependent (loading a month in
+isolation re-opens a meeting mid-節, as today), and the 0.21% of 節
+whose 第1日 is missing attach to the previous meeting.
+
+`db/rebuild_meetings.py` (new) repairs already-loaded data without
+re-parsing anything — `races` already carries `venue_id`, `race_date`
+and `series_day`, and `race_meetings` is referenced only by
+`races.meeting_id`. Dry-run by default; `--apply` snapshots
+`(races.id, races.meeting_id)` into `races_meeting_id_backup` and works
+in one transaction.
+
+Rehearsed on a local SQLite DB built from the real 2005-08..10 files,
+loaded through the *old* rule to reproduce the host's shape: 226
+meetings -> 220, 6 節 split, 177 races re-pointed, dry-run figures
+identical to `--apply`, 0 empty meetings left, re-run reports nothing
+to do.
+
+Applying it to .21 is still a data change on the host and needs separate
+approval. Do it only when no load is in flight.
+
 ## Next, in order
 
-1. Confirm the full B/K load finished with `failed=0`, and investigate
-   the 2 failures already seen in the 2008-08 batch (see above).
+1. Confirm the full B/K load finished with `failed=5` (four
+   duplicate-member archives plus `k110424`, all now fixed — see above),
+   then deploy the fixes to .21 and re-run `load_archive` for those five
+   days only.
+1b. With no load in flight, `pg_dump -t race_meetings`, then
+   `python -m boat_prediction.db.rebuild_meetings` (dry run) and, once
+   its figures look right, `--apply`. Expect ~18,450 meetings -> ~17,852.
 2. `python -m boat_prediction.db.load_odds_archive` on the host — the
    odds pages are already transferred but nothing has loaded them yet.
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
