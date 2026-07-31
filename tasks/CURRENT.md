@@ -3,7 +3,9 @@
 - Active task: deploy the schema + archive load to the 192.168.11.21
   Debian host (the project's actual runtime target; this Windows PC is
   the development/preparation machine only).
-- Status: in progress — B/K-file 21-year load running on 192.168.11.21.
+- Status: B/K-file 21-year load **complete** on 192.168.11.21
+  (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
+  deployed, and `race_meetings` rebuilt. Next is the odds archive load.
 - Last handoff: first application of this schema to a **live
   PostgreSQL** (previously only in-memory SQLite). See the
   "192.168.11.21 deployment" entry at the end of tasks/HANDOFF.md.
@@ -368,15 +370,61 @@ to do.
 Applying it to .21 is still a data change on the host and needs separate
 approval. Do it only when no load is in flight.
 
+## 21-year load and repair completed on .21 (2026-07-31)
+
+The load finished at 20:24 JST after 8 h 51 m:
+
+```
+done: loaded_files=15658 skipped_missing=39 skipped_already_loaded=62 failed=5
+LoadStats(races=1158622 entries=6951732 results=1146247
+          result_entries=6877482 payouts=11249134
+          venues_data_pending=152 venues_cancelled=2 races_cancelled=11775)
+```
+
+`failed=5` exactly as predicted, and the five files were the four
+duplicate-member archives plus `k110424`. Re-running `load_archive` for
+those five days after deploying the fixes gave `failed=0` on every one,
+with row counts matching the local verification (180/204/144/96 races;
+`k110424` recorded venue 01's 12 races as cancelled).
+
+**The host is not a git deployment** — it was set up by copying files, so
+`db/`, the parsers, `alembic/` and `alembic.ini` were all *untracked* on
+an old checkout (`f85ce09`). `git reset --hard` is refused by
+`.claude/hooks/command_guard.py`, so the reconciliation used
+`git stash push -u` (twice, to cover `tests/`) followed by
+`git merge --ff-only`. The stashes are still there as `stash@{0}` and
+`stash@{1}`. The host now tracks `origin/main` and future deployments
+are a plain `git pull`. 597 tests pass there.
+
+Rebuild result, matching the archive replay exactly:
+
+```
+applied: venue_days=96980 meetings_before=18450 meetings_after=17852
+         meetings_deleted=598 races_repointed=17976 series_split_before=541
+```
+
+Verified afterwards: 17,852 meetings, 0 empty meetings, 0 meeting
+spanning more than 10 days, 216 races still without a meeting (the
+card-less days, unchanged), and the backup table holding all 1,163,631
+rows. Of the three known split 節, venue 03 (2007-07-11..18) and venue
+24 (2005-09-01..07) are now single meetings; venue 09's 2005-09 節
+remains two, because its B-file carries 第1日 twice and 第1日 always
+opens a new meeting — the deliberate trade-off that keeps back-to-back
+節 apart.
+
+Rollback material, all still on the host:
+
+- `~/boat-prediction-backup-20260731.tar.gz` (670K, pre-deploy tree)
+- `~/backup_race_meetings_20260731.sql` (4.0M, `pg_dump -t race_meetings`)
+- `races_meeting_id_backup` table (1,163,631 rows) — drop it once the
+  rebuild is confirmed good, and note that `rebuild_meetings --apply`
+  refuses to run again while it exists.
+
 ## Next, in order
 
-1. Confirm the full B/K load finished with `failed=5` (four
-   duplicate-member archives plus `k110424`, all now fixed — see above),
-   then deploy the fixes to .21 and re-run `load_archive` for those five
-   days only.
-1b. With no load in flight, `pg_dump -t race_meetings`, then
-   `python -m boat_prediction.db.rebuild_meetings` (dry run) and, once
-   its figures look right, `--apply`. Expect ~18,450 meetings -> ~17,852.
+1. ~~Full B/K load, fix deployment, five-day re-load, meeting
+   rebuild.~~ **Done 2026-07-31** — see "21-year load and repair
+   completed" below.
 2. `python -m boat_prediction.db.load_odds_archive` on the host — the
    odds pages are already transferred but nothing has loaded them yet.
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
