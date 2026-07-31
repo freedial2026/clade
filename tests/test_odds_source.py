@@ -221,5 +221,23 @@ class FetchRangeTest(unittest.TestCase):
         self.assertEqual(EARLIEST_RETAINED_DATE, date(2017, 4, 1))
 
 
+class UnquotableOddsTest(unittest.TestCase):
+    def test_a_zero_cell_parses_as_absent_not_as_zero(self) -> None:
+        # The page renders 0.0 for a boat with no quote. Market
+        # normalisation divides by the odds, so a stored 0.0 becomes an
+        # infinite implied probability rather than a missing one --
+        # 2,309 archived snapshots had it.
+        from boat_prediction.odds_source import _parse_odds_cell
+
+        self.assertEqual(_parse_odds_cell("0.0"), (None, None))
+        self.assertEqual(_parse_odds_cell("0.0-0.0"), (None, None))
+
+    def test_the_floor_of_one_is_still_a_quote(self) -> None:
+        from boat_prediction.odds_source import _parse_odds_cell
+
+        self.assertEqual(_parse_odds_cell("1.0"), (1.0, None))
+        self.assertEqual(_parse_odds_cell("2.0-2.8"), (2.0, 2.8))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -145,7 +145,8 @@ class QualityAuditTest(unittest.TestCase):
             self.assertEqual(by_name["card_features_precede_the_deadline"].defects, 6)
             self.assertLess(report.axis_scores["point_in_time"], AXIS_WEIGHTS["point_in_time"])
 
-    def test_two_winners_cost_consistency(self) -> None:
+    def test_a_dead_heat_is_not_a_defect(self) -> None:
+        # 16 races in the archive have two boats on finish_position 1.
         with Session(self.engine) as session:
             self._seed_clean_race(session)
             session.execute(
@@ -158,7 +159,37 @@ class QualityAuditTest(unittest.TestCase):
             _, checks = quality_audit.audit(session)
 
             by_name = {c.name: c for c in checks}
-            self.assertEqual(by_name["finished_races_have_exactly_one_winner"].defects, 1)
+            self.assertEqual(by_name["a_race_that_produced_placings_has_a_first"].defects, 0)
+
+    def test_a_void_race_with_no_placings_at_all_is_not_a_defect(self) -> None:
+        # 132 races end with every boat carrying a status code (mostly F)
+        # and none a placing. That is an outcome, not missing data.
+        with Session(self.engine) as session:
+            self._seed_clean_race(session)
+            session.execute(
+                RaceResultEntry.__table__.update().values(finish_position=None, status="F")
+            )
+            session.commit()
+
+            _, checks = quality_audit.audit(session)
+
+            by_name = {c.name: c for c in checks}
+            self.assertTrue(by_name["a_race_that_produced_placings_has_a_first"].skipped)
+
+    def test_placings_that_skip_first_are_a_defect(self) -> None:
+        with Session(self.engine) as session:
+            self._seed_clean_race(session)
+            session.execute(
+                RaceResultEntry.__table__.update()
+                .where(RaceResultEntry.lane_number == 1)
+                .values(finish_position=None, status="F")
+            )
+            session.commit()
+
+            _, checks = quality_audit.audit(session)
+
+            by_name = {c.name: c for c in checks}
+            self.assertEqual(by_name["a_race_that_produced_placings_has_a_first"].defects, 1)
 
     def test_a_duplicate_lane_cannot_be_inserted_at_all(self) -> None:
         # The uniqueness checks are unreachable while the schema's own

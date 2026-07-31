@@ -158,22 +158,34 @@ _CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     ),
     (
         "validity",
-        "odds_are_positive",
-        "an odds value below 1.0 pays less than the stake",
+        "odds_are_quotable",
+        "odds include the stake, so 1.00 is the floor; a stored 0 would "
+        "become an infinite implied probability, not a missing one",
         "SELECT count(*) FROM odds_snapshots",
-        "SELECT count(*) FROM odds_snapshots WHERE odds <= 0",
+        "SELECT count(*) FROM odds_snapshots WHERE odds < 1.0",
     ),
     (
         "consistency",
-        "finished_races_have_exactly_one_winner",
-        "exactly one lane finished first",
-        """SELECT count(*) FROM race_results res
-           JOIN races r ON r.id = res.race_id WHERE r.status = 'finished'""",
+        "a_race_that_produced_placings_has_a_first",
+        "not 'exactly one winner': 同着 is real (16 races have two boats "
+        "on finish_position 1) and so is a void race where every boat "
+        "carries a status code and none a placing (132 races, mostly F). "
+        "The defect is placings that skip first place",
         """SELECT count(*) FROM race_results res
            JOIN races r ON r.id = res.race_id
            WHERE r.status = 'finished'
-             AND (SELECT count(*) FROM race_result_entries e
-                  WHERE e.race_result_id = res.id AND e.finish_position = 1) <> 1""",
+             AND EXISTS (SELECT 1 FROM race_result_entries e
+                         WHERE e.race_result_id = res.id
+                           AND e.finish_position IS NOT NULL)""",
+        """SELECT count(*) FROM race_results res
+           JOIN races r ON r.id = res.race_id
+           WHERE r.status = 'finished'
+             AND EXISTS (SELECT 1 FROM race_result_entries e
+                         WHERE e.race_result_id = res.id
+                           AND e.finish_position IS NOT NULL)
+             AND NOT EXISTS (SELECT 1 FROM race_result_entries e
+                             WHERE e.race_result_id = res.id
+                               AND e.finish_position = 1)""",
     ),
     (
         "consistency",

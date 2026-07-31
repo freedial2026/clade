@@ -126,20 +126,36 @@ def fetch_racing_venues(target_date: date, *, opener: object | None = None) -> t
     return tuple(codes)
 
 
+MIN_QUOTED_ODDS = 1.0
+"""Below this a cell is not a quote.
+
+Odds here are payout multipliers that include the stake, so 1.00 is the
+floor -- and 1.00 is exactly the smallest value in the 213,729 archived
+snapshots. The page nonetheless renders `0.0` for a boat with no quote
+(an absent 欠場 entry), which parsed as a real 0.0 for 2,309 rows.
+That is not merely wrong, it is dangerous: market normalisation divides
+by the odds, so a stored 0.0 turns into an infinite implied probability
+rather than a missing one.
+"""
+
+
 def _parse_odds_cell(text: str) -> tuple[float | None, float | None]:
     """Parse an odds cell: '5.6' -> (5.6, None); '2.0-2.8' -> (2.0, 2.8);
-    non-numeric (欠場 etc.) -> (None, None)."""
+    non-numeric (欠場 etc.) and any value below `MIN_QUOTED_ODDS`
+    -> (None, None)."""
+
+    def _quote(value: str) -> float | None:
+        try:
+            parsed = float(value)
+        except ValueError:
+            return None
+        return parsed if parsed >= MIN_QUOTED_ODDS else None
+
     text = text.strip()
     if "-" in text:
         low, _, high = text.partition("-")
-        try:
-            return float(low), float(high)
-        except ValueError:
-            return None, None
-    try:
-        return float(text), None
-    except ValueError:
-        return None, None
+        return _quote(low), _quote(high)
+    return _quote(text), None
 
 
 def _section_rows(soup: object, heading: str) -> list:
