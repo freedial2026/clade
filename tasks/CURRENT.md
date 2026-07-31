@@ -530,6 +530,76 @@ scikit-learn 1.9.0 / numpy 2.5.1 were installed into the host venv (the
 `ml` extra was already declared in `pyproject.toml`). The run takes
 ~4 min for 31 folds.
 
+## P1 improved with within-meeting form + phase; calibration tried and did not help (2026-08-01)
+
+Answering "should the first half of a 節 be treated as validation
+evidence, with the final etc. as the decision point?" (raised after the
+first P1 result): built the features to test it rather than guessing.
+
+**db/dataset.py** gained two things:
+
+- Within-meeting form: the motor/boat are drawn once per 節 and a racer
+  keeps them all series, so how that racer has placed *earlier in this
+  meeting* is direct evidence about the actual equipment -- something
+  season-long B-file rates can only reflect with a lag. Tracked by
+  `racer_id` (not lane, since 準優/優勝戦 reseed by standing), computed
+  with one windowed SQL query per call rather than a per-race subquery.
+  Shrunk toward the racer's own season win rate (weight = 3 starts,
+  `MEETING_FORM_SHRINKAGE_STARTS`) so 第1日 still gets a defined feature.
+  A DNF scores as the worst outcome (0.0), not missing.
+- `race_phase.is_standing_seeded()`, appended once per race (not once
+  per lane) so a multinomial model can learn its own per-lane
+  coefficient for it -- letting the model discover "lane 1 matters more
+  in a seeded round" itself rather than that being hand-coded.
+
+Re-running the same 2023-01-01..2026-07-29 window (198,264 races, 31
+folds): `logistic_cards` mean log-loss **1.22502 → 1.21134** (+1.12%),
+now **+11.46%** over `lane_prior` (was +10.46%), still winning **31/31**
+folds.
+
+**db/evaluate_phase.py** (new) answers the actual question asked --
+where does the edge live:
+
+| phase | n | logistic_cards vs lane_prior |
+|---|---|---|
+| trial (予選) | 68,427 | **-12.47%** |
+| qualifier | 392 | -12.25% |
+| semifinal (準優勝戦) | 5,985 | **-8.77%** |
+| final (優勝戦) | 2,186 | **-5.68%** |
+| selection | 14,110 | -8.15% |
+| general | 29,839 | -10.56% |
+| unknown | 21,945 | -12.47% |
+
+**The edge is smallest in exactly the standing-seeded rounds** (final,
+then semifinal) and largest in 予選 -- consistent with the selection-bias
+hypothesis raised when this was discussed: racers who reach 準優/優勝戦
+are pre-filtered to be strong, so there is less variance left for card
+features to explain. This is the opposite of "save the model for the
+final" -- if anything, the trial races are where this feature set earns
+its keep. `final`'s CI ([1.0128, 1.1074] for `logistic_cards`) is
+noticeably wider than `trial`'s given ~70 test races/fold, so treat the
+final's exact number as directional rather than precise, but the
+same-direction drop across *both* seeded rounds (final and semifinal)
+against both unseeded rounds is not a single sparse-group artifact.
+
+**db/evaluate_calibration.py** (new): `BinnedCalibrator` fit on
+predictions the classifier never trained on (a held-out month between
+`core_train` and `test`, not the model's own training rows -- fitting on
+in-sample predictions would calibrate away overfitting rather than
+measure it). Result over 30 folds: mean log-loss **1.21112 → 1.21452**
+(worse), mean ECE **0.01517 → 0.01817** (worse).
+
+**Calibration did not help, and the reason is informative rather than a
+bug**: raw ECE is already ~0.015-0.02 -- the multinomial logistic
+regression's own confidence is close to calibrated out of the box (a
+well-regularized model trained directly on log-loss often is). A 10-bin
+histogram recalibrator fit on one month (~4,000-5,000 races, ~400-500
+per bin) adds sampling noise to an already-small miscalibration rather
+than correcting a real one. Not applied to production; worth revisiting
+only if a future model (e.g. a tree ensemble) shows materially worse raw
+ECE, or with more calib_valid data / fewer bins / isotonic regression if
+this matters later.
+
 ## Next, in order
 
 1. ~~Full B/K load, fix deployment, five-day re-load, meeting
@@ -540,13 +610,15 @@ scikit-learn 1.9.0 / numpy 2.5.1 were installed into the host venv (the
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
    `python -m boat_prediction.db.load_jma_archive` on the host — the
    jma/ pages are already transferred but nothing has loaded them yet.
-4. **P0 and P1 are done** on real data (see above). P2 is next and is
-   the one with a data problem, not a code problem: the archived odds
-   are stamped at the deadline, so they can score calibration against
-   the market but cannot support a decision made before betting closed.
-   The pre-deadline series started accumulating on 2026-08-01 via cron.
-   Until it is long enough, a P2 run can only be a market-comparison
-   study, not a paper simulation anyone should believe.
+4. **P0 and P1 are done** on real data, including the phase breakdown
+   and a (negative-result) calibration check (see above). P2 is next
+   and is the one with a data problem, not a code problem: the archived
+   odds are stamped at the deadline, so they can score calibration
+   against the market but cannot support a decision made before betting
+   closed. The pre-deadline series started accumulating on 2026-08-01
+   via cron. Until it is long enough, a P2 run can only be a
+   market-comparison study, not a paper simulation anyone should
+   believe.
 5. `motors`/`boats` tables: still on hold until a source with real
    service periods is found.
 6. Decide and build the fan-file DB table + loader (parser is done;
