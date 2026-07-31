@@ -90,10 +90,56 @@ Not yet done: `alembic upgrade head` and `load_jma_archive` have not
 run against .21 — do that after the B/K load finishes, so it isn't
 competing with it for the same PostgreSQL instance.
 
+**2026-07-31, mid-load: 2 failures appeared in the B/K run** (log line
+`2008-08: ... failed=2`, out of 2,554 files loaded so far). The run
+does not stop on a per-file failure by design (see `load_archive.py`'s
+docstring) and continues. Not yet investigated — do this as step 1
+below once the run finishes and the full failure list is in the log.
+
+## fan-file parser done locally (2026-07-31), table/loader not yet built
+
+`src/boat_prediction/fan_stats_parser.py` (new): parses the fixed-width
+モーターボートファン手帳 racer records `fan_file_source.py` downloads.
+Layout came from the official spec page
+(`boatrace.jp/owpc/pc/extra/data/layout.html`) and was cross-validated
+against all 1,644 real records in `fan2604.lzh` — computed field-length
+total matches the observed record length exactly, and every field lands
+on domain-plausible values (year/period echo the file's own period on
+every row, class is always A1/A2/B1/B2, ability index clusters around
+50.00, course-1 stats are systematically stronger than other courses,
+period_from/to match the file's stated window). Full 2014-2026 archive
+swept: 40,204 records, 0 parse failures.
+
+**Finding: the file format changed in 2014.** Every file from
+`fan1404.lzh` onward is a 403-character record; every file from
+`fan0110.lzh` through `fan1310.lzh` (2001-2013) is a different,
+400-character record not yet reverse-engineered. The parser raises
+`FanStatsParseError` with a clear message on that legacy length rather
+than guessing — 2001-2013 fan-file data is currently unparseable, not
+silently wrong.
+
+Two fields share a 4-character width but different decimal scales,
+found empirically: `win_rate` (a 0-9-ish weighted score) is `raw/100`;
+`place_rate` (a genuine 0-100% stat) is `raw/10`. See the module
+docstring for the full evidence trail.
+
+14 new tests (`test_fan_stats_parser.py`), fixtures built
+programmatically from `_FIELD_LAYOUT` rather than real downloaded text.
+526/526 total, quality gate green.
+
+Not yet done: no DB table exists for this data yet, and none of
+`fan_file_source.py`/`fan_stats_parser.py` is wired into any loader.
+Deliberately out of scope for this pass — `ParsedFanRecord` alone is
+~30 scalar fields plus 6 courses x (4 summary + 14 position-breakdown)
+fields, and deciding how much of that to materialize as DB columns
+(most of the per-course finish/irregular-count breakdown is unlikely to
+ever be used as a feature) is a real design call, not mechanical work
+like the JMA weather table was.
+
 ## Next, in order
 
-1. Confirm the full B/K load finished with `failed=0`; investigate any
-   entries in the failure list.
+1. Confirm the full B/K load finished with `failed=0`, and investigate
+   the 2 failures already seen in the 2008-08 batch (see above).
 2. `python -m boat_prediction.db.load_odds_archive` on the host — the
    odds pages are already transferred but nothing has loaded them yet.
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
@@ -104,8 +150,8 @@ competing with it for the same PostgreSQL instance.
    validated on synthetic fixtures).
 5. `motors`/`boats` tables: still on hold until a source with real
    service periods is found.
-6. fan-file: fixed-width record parser (doesn't exist yet) + a new
-   point-in-time racer-stats table + loader.
+6. Decide and build the fan-file DB table + loader (parser is done;
+   see above for the scope-of-columns decision that's still open).
 
 Before any real use: re-run P0-P2 against the real data, confirm the P2
 forward test is genuinely stable, then seek separate approval for any
