@@ -489,6 +489,47 @@ Second run: **100.00 / 100, every check passing.** The point_in_time
 axis in particular is clean across 6,983,370 entry rows — no card
 feature is available after its deadline.
 
+## P1 re-run against real data (2026-07-31)
+
+`db/dataset.py` and `db/evaluate_p1.py` (new) turn database rows into
+`(X, y, dates)` and run the existing walk-forward machinery over them.
+Window 2023-01-01..2026-07-29, expanding train, one-month test,
+`min_train_months=12` → 31 folds, **198,264 races**.
+
+Dataset losses are negligible and all explained: 32 of 198,296 races
+dropped, every one a dead heat or a void race. **Zero** dropped for a
+missing feature and **zero** for a feature available after its deadline.
+
+| model | mean log-loss | vs uniform |
+|---|---|---|
+| `uniform` (1/6) | 1.79176 | — (ln 6 = 1.79176, so the harness is right) |
+| `lane_prior` | 1.36814 | +23.64% |
+| `logistic_cards` | **1.22502** | **+31.63%** |
+
+`logistic_cards` beats `lane_prior` by 10.46% and does so in **31 of 31
+folds** — consistent enough not to be noise. So the card features carry
+real information beyond "inside lanes win", which is the question P1
+existed to answer.
+
+Two things worth keeping in mind about that number:
+
+- It is log-loss, not money. Nothing here says the edge survives the
+  market; that is P2's question and the archived odds cannot answer it
+  (they are stamped at the deadline).
+- `logistic_cards` is a linear model on 54 raw card columns with no
+  calibration step yet. `calibration.py` exists and is unused by this
+  runner.
+
+`_AlignedProba` in the runner fixes a hazard that would not have raised
+an error: log-loss reads each row by the true class's position in the
+class list, while scikit-learn orders its columns by the classes seen in
+training, so a fold whose training window contained no win by some lane
+would have scored every later lane against the wrong probability.
+
+scikit-learn 1.9.0 / numpy 2.5.1 were installed into the host venv (the
+`ml` extra was already declared in `pyproject.toml`). The run takes
+~4 min for 31 folds.
+
 ## Next, in order
 
 1. ~~Full B/K load, fix deployment, five-day re-load, meeting
@@ -499,13 +540,13 @@ feature is available after its deadline.
 3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
    `python -m boat_prediction.db.load_jma_archive` on the host — the
    jma/ pages are already transferred but nothing has loaded them yet.
-4. Re-run P1-P2 against the real loaded data. **P0 is done** (see
-   above, 100.00/100). P1 next needs a leakage-safe dataset builder
-   pulling `races` + `race_entries` + the winning lane out of the
-   database into `(X, y, dates)` for `walk_forward`/`model_comparison`;
-   no such builder exists yet. Note the scale: 1.15 M races x 6 lanes
-   will not fit in plain Python lists, so P1 should start on a recent
-   window rather than all 21 years.
+4. **P0 and P1 are done** on real data (see above). P2 is next and is
+   the one with a data problem, not a code problem: the archived odds
+   are stamped at the deadline, so they can score calibration against
+   the market but cannot support a decision made before betting closed.
+   The pre-deadline series started accumulating on 2026-08-01 via cron.
+   Until it is long enough, a P2 run can only be a market-comparison
+   study, not a paper simulation anyone should believe.
 5. `motors`/`boats` tables: still on hold until a source with real
    service periods is found.
 6. Decide and build the fan-file DB table + loader (parser is done;
