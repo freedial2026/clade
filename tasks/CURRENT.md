@@ -62,19 +62,48 @@ and `pylhasa` for `.lzh` extraction. Missing either produces a
   ledger at `data/manifests/db_load_ledger.json`, so an interrupted run
   can simply be re-issued.
 
+## JMA weather: schema + loader done locally (2026-07-31), not yet applied to .21
+
+Built while the B/K load ran in the background, entirely on the Windows
+PC against SQLite/in-memory fixtures — no connection to .21 was needed
+for this:
+
+- `db/models.py`: new `WeatherObservation` table (`weather_observations`),
+  keyed by `(venue_id, weather_date)`. `loader.weather_available_at`
+  reuses the same day-after-midnight-JST conservative bound as
+  `results_available_at`, for the same reason (the source states no
+  per-observation publish time).
+- `loader.load_weather_month` — idempotent per venue-month, mirrors
+  `load_b_file_day`'s replace-then-reinsert pattern.
+- `db/load_jma_archive.py` — resumable ledger-driven CLI, iterating
+  `(year, month) x venue` rather than by date since
+  `jma_weather_source.fetch_all`'s on-disk layout is one file per
+  venue per month.
+- Alembic revision `9e24c5ea64e2` (on top of `3997a65d30a7`), generated
+  against a scratch SQLite baseline (no live DB was available on this
+  PC) and cross-checked with `alembic -x dialect=postgresql ... --sql`.
+  Forward/rollback both verified.
+- 17 new tests (`test_db_models.py`, `test_db_loader.py`,
+  `test_load_jma_archive.py`); 512/512 total, quality gate green.
+
+Not yet done: `alembic upgrade head` and `load_jma_archive` have not
+run against .21 — do that after the B/K load finishes, so it isn't
+competing with it for the same PostgreSQL instance.
+
 ## Next, in order
 
 1. Confirm the full B/K load finished with `failed=0`; investigate any
    entries in the failure list.
 2. `python -m boat_prediction.db.load_odds_archive` on the host — the
    odds pages are already transferred but nothing has loaded them yet.
-3. Re-run P0-P2 against the real loaded data (this is the step the
+3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
+   `python -m boat_prediction.db.load_jma_archive` on the host — the
+   jma/ pages are already transferred but nothing has loaded them yet.
+4. Re-run P0-P2 against the real loaded data (this is the step the
    whole backlog has been waiting on; everything before it was
    validated on synthetic fixtures).
-4. `motors`/`boats` tables: still on hold until a source with real
+5. `motors`/`boats` tables: still on hold until a source with real
    service periods is found.
-5. JMA weather: new table + migration + a batch driver over the
-   already-transferred `jma/` archive.
 6. fan-file: fixed-width record parser (doesn't exist yet) + a new
    point-in-time racer-stats table + loader.
 

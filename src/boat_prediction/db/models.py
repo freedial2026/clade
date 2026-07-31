@@ -503,3 +503,43 @@ class OddsSnapshot(TimestampMixin, Base):
     available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_closing: Mapped[bool | None] = mapped_column(Boolean)
     source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
+
+
+class WeatherObservation(TimestampMixin, Base):
+    """One venue's JMA daily weather summary (`jma_weather_source.py`).
+
+    Keyed by `(venue_id, weather_date)`, not by race: JMA publishes one
+    summary per station per day, shared by every race at that venue that
+    day. Column set mirrors `jma_weather_source.DailyWeather` field for
+    field; this class has a different name to avoid confusion with that
+    source-side dataclass when both are imported together.
+    """
+
+    __tablename__ = "weather_observations"
+    __table_args__ = (UniqueConstraint("venue_id", "weather_date"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    venue_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("venues.id"), nullable=False, index=True
+    )
+    weather_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    precipitation_total_mm: Mapped[float | None] = mapped_column(Numeric(6, 1))
+    precipitation_max_1h_mm: Mapped[float | None] = mapped_column(Numeric(5, 1))
+    precipitation_max_10min_mm: Mapped[float | None] = mapped_column(Numeric(5, 1))
+    temperature_avg_c: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    temperature_max_c: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    temperature_min_c: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    humidity_avg_pct: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    humidity_min_pct: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_avg_ms: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_max_ms: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_max_direction: Mapped[str | None] = mapped_column(String(10))
+    wind_max_instant_ms: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_max_instant_direction: Mapped[str | None] = mapped_column(String(10))
+    wind_prevailing_direction: Mapped[str | None] = mapped_column(String(10))
+    sunshine_hours: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    # See loader.weather_available_at: same day-after-midnight-JST
+    # conservative bound as results_available_at, for the same reason --
+    # JMA states no per-observation publication timestamp for this page.
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))

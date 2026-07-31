@@ -32,7 +32,9 @@ from boat_prediction.db.models import (
     RaceResult,
     RaceResultEntry,
     Venue,
+    WeatherObservation,
 )
+from boat_prediction.jma_weather_source import DailyWeather
 from boat_prediction.kfile_parser import ParsedRace, ParsedVenueDay, RaceEntryResult
 from boat_prediction.kfile_parser import RacePayout as KRacePayout
 
@@ -152,6 +154,11 @@ class TemporalHelpersTest(unittest.TestCase):
     def test_scheduled_deadline_at_rejects_unparsable_time(self) -> None:
         with self.assertRaises(loader.LoaderError):
             loader.scheduled_deadline_at(RACE_DATE, "not-a-time")
+
+    def test_weather_available_at_is_midnight_jst_of_the_next_day_in_utc(self) -> None:
+        result = loader.weather_available_at(RACE_DATE)
+
+        self.assertEqual(result, dt.datetime(2026, 6, 1, 15, 0, tzinfo=dt.UTC))
 
 
 class EnsureReferenceDataTest(unittest.TestCase):
@@ -449,6 +456,100 @@ class CrossFileLinkingTest(unittest.TestCase):
             self.assertEqual(
                 exhibition.available_at, loader.results_available_at(RACE_DATE).replace(tzinfo=None)
             )
+
+
+def _daily_weather(day: int, **overrides) -> DailyWeather:
+    fields = {
+        "date_iso": f"2026-06-{day:02d}",
+        "precipitation_total_mm": 0.0,
+        "precipitation_max_1h_mm": 0.0,
+        "precipitation_max_10min_mm": 0.0,
+        "temperature_avg_c": 22.5,
+        "temperature_max_c": 27.1,
+        "temperature_min_c": 18.3,
+        "humidity_avg_pct": 65.0,
+        "humidity_min_pct": 40.0,
+        "wind_avg_ms": 2.1,
+        "wind_max_ms": 5.4,
+        "wind_max_direction": "南西",
+        "wind_max_instant_ms": 8.9,
+        "wind_max_instant_direction": "西",
+        "wind_prevailing_direction": "南",
+        "sunshine_hours": 6.7,
+    }
+    fields.update(overrides)
+    return DailyWeather(**fields)
+
+
+class LoadWeatherMonthTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = _engine()
+        self.addCleanup(self.engine.dispose)
+        with Session(self.engine) as session:
+            loader.ensure_reference_data(session)
+            session.commit()
+
+    def test_loads_every_day_given_for_the_venue(self) -> None:
+        with Session(self.engine) as session:
+            stats = loader.load_weather_month(
+                session, "24", 2026, 6, (_daily_weather(1), _daily_weather(2))
+            )
+            session.commit()
+
+            self.assertEqual(stats.observations, 2)
+            self.assertEqual(session.query(WeatherObservation).count(), 2)
+
+    def test_available_at_is_midnight_jst_of_the_day_after_the_observation(self) -> None:
+        with Session(self.engine) as session:
+            loader.load_weather_month(session, "24", 2026, 6, (_daily_weather(1),))
+            session.commit()
+
+            row = session.scalar(select(WeatherObservation))
+            self.assertEqual(
+                row.available_at, loader.weather_available_at(dt.date(2026, 6, 1)).replace(tzinfo=None)
+            )
+
+    def test_skips_an_unknown_venue_code_without_raising(self) -> None:
+        with Session(self.engine) as session:
+            stats = loader.load_weather_month(session, "99", 2026, 6, (_daily_weather(1),))
+
+            self.assertEqual(stats.skipped_unknown_venue, 1)
+            self.assertEqual(stats.observations, 0)
+            self.assertEqual(session.query(WeatherObservation).count(), 0)
+
+    def test_reloading_the_same_month_replaces_rather_than_duplicates(self) -> None:
+        with Session(self.engine) as session:
+            loader.load_weather_month(session, "24", 2026, 6, (_daily_weather(1, sunshine_hours=1.0),))
+            session.commit()
+
+            loader.load_weather_month(session, "24", 2026, 6, (_daily_weather(1, sunshine_hours=9.0),))
+            session.commit()
+
+            self.assertEqual(session.query(WeatherObservation).count(), 1)
+            row = session.scalar(select(WeatherObservation))
+            self.assertEqual(float(row.sunshine_hours), 9.0)
+
+    def test_loading_a_different_month_does_not_touch_the_first(self) -> None:
+        with Session(self.engine) as session:
+            loader.load_weather_month(session, "24", 2026, 6, (_daily_weather(30),))
+            session.commit()
+
+            loader.load_weather_month(
+                session, "24", 2026, 7, (_daily_weather(1, date_iso="2026-07-01"),)
+            )
+            session.commit()
+
+            self.assertEqual(session.query(WeatherObservation).count(), 2)
+
+    def test_loading_a_different_venue_does_not_touch_the_first(self) -> None:
+        with Session(self.engine) as session:
+            loader.load_weather_month(session, "24", 2026, 6, (_daily_weather(1),))
+            session.commit()
+
+            loader.load_weather_month(session, "01", 2026, 6, (_daily_weather(1),))
+            session.commit()
+
+            self.assertEqual(session.query(WeatherObservation).count(), 2)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..bfile_parser import ParsedVenueDayCard
+from ..jma_weather_source import DailyWeather
 from ..kfile_parser import ParsedVenueDay
 from ..odds_source import RaceOdds
 from ..race_id import VALID_VENUE_CODES
@@ -49,6 +50,7 @@ from .models import (
     RaceResult,
     RaceResultEntry,
     Venue,
+    WeatherObservation,
 )
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -56,6 +58,7 @@ JST = ZoneInfo("Asia/Tokyo")
 SOURCE_B_FILE = "boatrace_b_file"
 SOURCE_K_FILE = "boatrace_k_file"
 SOURCE_ODDS = "boatrace_odds"
+SOURCE_JMA_WEATHER = "jma_weather"
 
 _FIXED_ENTRY_MARKER = "進入固定"
 
@@ -127,6 +130,19 @@ def results_available_at(race_date: dt.date) -> dt.datetime:
     return to_utc(dt.datetime.combine(race_date + dt.timedelta(days=1), dt.time(0, 0), tzinfo=JST))
 
 
+def weather_available_at(weather_date: dt.date) -> dt.datetime:
+    """When a JMA daily weather summary is treated as available: midnight
+    JST on the day *after* the observation date, in UTC.
+
+    Same reasoning and same bound as `results_available_at`: the fetched
+    page carries no per-observation publication timestamp, only which
+    calendar day it summarizes, so the day boundary is the only bound
+    derivable from the data -- and the conservative (later) direction is
+    the safe one for a leakage check.
+    """
+    return to_utc(dt.datetime.combine(weather_date + dt.timedelta(days=1), dt.time(0, 0), tzinfo=JST))
+
+
 def scheduled_deadline_at(race_date: dt.date, deadline_time: str) -> dt.datetime:
     """Combine the race date with the B-file header's 締切予定 "HH:MM"."""
     hour_raw, _, minute_raw = deadline_time.partition(":")
@@ -178,6 +194,19 @@ _DATA_SOURCE_SEED = (
         "license_note": "owpc/pc/extra/policy.html prohibits large-volume access and "
         "redistribution; fetched only after explicit in-session approval, "
         "rate-limited, not redistributed in this repository.",
+    },
+    {
+        "code": SOURCE_JMA_WEATHER,
+        "name": "気象庁 過去の気象データ (daily, per venue's nearest station)",
+        "provider": "気象庁",
+        "source_type": "official_website",
+        "official_url": "https://www.data.jma.go.jp/stats/etrn/",
+        "terms_url": "https://www.jma.go.jp/jma/kishou/info/coment.html",
+        "acquisition_method": "scraped_open_data",
+        "update_frequency": "daily",
+        "license_note": "公共データ利用規約（第1.0版）: reuse including commercial use "
+        "allowed with attribution. Rate-limited fetch, not redistributed in "
+        "this repository.",
     },
 )
 
@@ -659,18 +688,106 @@ def load_odds_day(
     return stats
 
 
+@dataclass
+class WeatherLoadStats:
+    """What a weather load actually did. `skipped_unknown_venue` should
+    never be nonzero in practice: `jma_weather_source.VENUE_STATIONS`
+    covers exactly `race_id.VALID_VENUE_CODES` (asserted in that
+    module), so this is a defensive count, not an expected outcome."""
+
+    observations: int = 0
+    skipped_unknown_venue: int = 0
+
+    def merge(self, other: WeatherLoadStats) -> WeatherLoadStats:
+        return WeatherLoadStats(
+            observations=self.observations + other.observations,
+            skipped_unknown_venue=self.skipped_unknown_venue + other.skipped_unknown_venue,
+        )
+
+
+def load_weather_month(
+    session: Session,
+    venue_code: str,
+    year: int,
+    month: int,
+    daily_weathers: tuple[DailyWeather, ...],
+) -> WeatherLoadStats:
+    """Load one venue-month of parsed JMA daily summaries into
+    `weather_observations`.
+
+    Idempotent per `(venue, month)`: any existing rows for this venue
+    whose `weather_date` falls in this month are fully replaced, matching
+    `load_b_file_day`/`load_k_file_day`/`load_odds_day`'s "delete this
+    scope's rows, then re-insert" pattern -- a re-run never accumulates
+    duplicates or leaves a stale row behind if a later fetch corrected an
+    earlier one.
+    """
+    stats = WeatherLoadStats()
+    if venue_code not in VALID_VENUE_CODES:
+        stats.skipped_unknown_venue += 1
+        return stats
+
+    venue = _venue(session, venue_code)
+    source_id = _source_id(session, SOURCE_JMA_WEATHER)
+
+    month_start = dt.date(year, month, 1)
+    month_end = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
+    for existing in session.scalars(
+        select(WeatherObservation).where(
+            WeatherObservation.venue_id == venue.id,
+            WeatherObservation.weather_date >= month_start,
+            WeatherObservation.weather_date < month_end,
+        )
+    ):
+        session.delete(existing)
+    session.flush()
+
+    for daily in daily_weathers:
+        weather_date = dt.date.fromisoformat(daily.date_iso)
+        session.add(
+            WeatherObservation(
+                venue_id=venue.id,
+                weather_date=weather_date,
+                precipitation_total_mm=daily.precipitation_total_mm,
+                precipitation_max_1h_mm=daily.precipitation_max_1h_mm,
+                precipitation_max_10min_mm=daily.precipitation_max_10min_mm,
+                temperature_avg_c=daily.temperature_avg_c,
+                temperature_max_c=daily.temperature_max_c,
+                temperature_min_c=daily.temperature_min_c,
+                humidity_avg_pct=daily.humidity_avg_pct,
+                humidity_min_pct=daily.humidity_min_pct,
+                wind_avg_ms=daily.wind_avg_ms,
+                wind_max_ms=daily.wind_max_ms,
+                wind_max_direction=daily.wind_max_direction,
+                wind_max_instant_ms=daily.wind_max_instant_ms,
+                wind_max_instant_direction=daily.wind_max_instant_direction,
+                wind_prevailing_direction=daily.wind_prevailing_direction,
+                sunshine_hours=daily.sunshine_hours,
+                available_at=weather_available_at(weather_date),
+                source_id=source_id,
+            )
+        )
+        stats.observations += 1
+
+    return stats
+
+
 __all__ = [
     "SOURCE_B_FILE",
+    "SOURCE_JMA_WEATHER",
     "SOURCE_K_FILE",
     "SOURCE_ODDS",
     "LoadStats",
     "LoaderError",
     "OddsLoadStats",
+    "WeatherLoadStats",
     "card_available_at",
     "ensure_reference_data",
     "load_b_file_day",
     "load_k_file_day",
     "load_odds_day",
+    "load_weather_month",
     "results_available_at",
     "scheduled_deadline_at",
+    "weather_available_at",
 ]

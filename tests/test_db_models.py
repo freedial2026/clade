@@ -27,6 +27,7 @@ from boat_prediction.db.models import (
     Racer,
     RaceResult,
     Venue,
+    WeatherObservation,
 )
 
 
@@ -215,6 +216,68 @@ class SchemaConstraintTest(unittest.TestCase):
             session.commit()
 
             self.assertEqual(session.scalar(select(ExhibitionEntry).limit(1)), None)
+
+
+class WeatherObservationConstraintTest(unittest.TestCase):
+    """`(venue_id, weather_date)` is the natural key -- two summaries for
+    the same venue-day would mean an earlier fetch was overwritten
+    without going through `loader.load_weather_month`'s explicit
+    delete-then-reinsert, which should never happen via the ORM."""
+
+    def setUp(self) -> None:
+        self.engine = _engine()
+        self.addCleanup(self.engine.dispose)
+
+    def _venue(self, session: Session, code: str = "24") -> Venue:
+        venue = Venue(code=code, name="大村")
+        session.add(venue)
+        session.flush()
+        return venue
+
+    def test_venue_and_date_pair_is_unique(self) -> None:
+        with Session(self.engine) as session:
+            venue = self._venue(session)
+            session.add(
+                WeatherObservation(
+                    venue_id=venue.id,
+                    weather_date=dt.date(2026, 6, 1),
+                    available_at=dt.datetime.now(dt.UTC),
+                )
+            )
+            session.flush()
+            session.add(
+                WeatherObservation(
+                    venue_id=venue.id,
+                    weather_date=dt.date(2026, 6, 1),
+                    available_at=dt.datetime.now(dt.UTC),
+                )
+            )
+
+            with self.assertRaises(IntegrityError):
+                session.flush()
+
+    def test_same_date_at_a_different_venue_is_allowed(self) -> None:
+        with Session(self.engine) as session:
+            venue_a = self._venue(session, code="24")
+            venue_b = self._venue(session, code="01")
+            session.add_all(
+                [
+                    WeatherObservation(
+                        venue_id=venue_a.id,
+                        weather_date=dt.date(2026, 6, 1),
+                        available_at=dt.datetime.now(dt.UTC),
+                    ),
+                    WeatherObservation(
+                        venue_id=venue_b.id,
+                        weather_date=dt.date(2026, 6, 1),
+                        available_at=dt.datetime.now(dt.UTC),
+                    ),
+                ]
+            )
+
+            session.flush()  # does not raise
+
+            self.assertEqual(session.query(WeatherObservation).count(), 2)
 
 
 class VenueNamesTest(unittest.TestCase):
