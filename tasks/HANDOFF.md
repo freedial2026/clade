@@ -867,3 +867,101 @@ attempted this session)**:
    idempotent `fetch_range()` to resume from the incomplete 2025-11-05
    (skipping already-downloaded files). The retry picks up 2025-07-29 →
    2026-07-28 from where it failed; currently running in background.
+
+## P2 measured on real payouts: the card-feature edge does not survive the price (2026-08-01)
+
+The standing claim (tasks/CURRENT.md item 4) was that P2 could only be a
+market-comparison study, because the archived odds are stamped at the
+deadline and so cannot inform a pre-close decision. **That is only true
+of EV-screened selection.** A paper simulation needs a price only to
+*settle*, and settlement does not need odds at all: boat racing is
+pari-mutuel, and the K-file's 単勝 payout is exactly what a ¥100 bet
+returned. `race_payouts` holds 1,130,675 of them across the full 21
+years. So the decision can use pre-deadline card features only, and the
+settlement can use a recorded payout — leakage-free, and available now
+rather than after the cron series matures.
+
+**Two floors were measured first, because an ROI without them means
+nothing.**
+
+- **Takeout = 26.41%**, from closing odds over the 11,050 races carrying
+  a full six-lane quote (`market.overround()`: `Σ1/odds = 1/(1-t)`).
+  Mean and median agree to four decimals, p05–p95 = 1.335–1.399.
+- **Per-lane flat-bet return, whole archive**, from payouts alone:
+
+  | lane | win rate | return |
+  |---|---|---|
+  | 1 | 46.32% | **0.8598** |
+  | 2 | 16.06% | 0.7363 |
+  | 3 | 13.62% | 0.7057 |
+  | 4 | 11.72% | 0.6766 |
+  | 5 | 7.25% | 0.5722 |
+  | 6 | 5.04% | 0.4109 |
+
+  A calibrated market would return `1 - t = 0.736` on *every* lane. Lane
+  2 sits almost exactly there; lane 1 returns 12 points more and lane 6
+  32 points less. That is a large, persistent **favourite–longshot
+  bias**: lane 1 wins 46.3% but is priced at ≈39.6%.
+
+  The two measurements cross-validate: `Σ return_L = 3.9615 = (1-t)·Σ(p/m)`
+  gives `Σ(p/m) = 5.383`, and the six-lane flat portfolio's measured
+  0.6603 equals `(1-t)/6 · 5.383 = 0.660` exactly. An earlier draft
+  reported that 0.6603 *as* the takeout — wrong, and worth recording as
+  the trap: the flat portfolio only equals `1-t` when the market is
+  calibrated, and here it plainly is not.
+
+**So the bar is not −26.4% (the takeout) but −14.0% (always back lane 1).**
+
+**The run.** Same window and folds as P1 (2023-01-01…2026-07-29, 31
+walk-forward folds, 142,884 races), `logistic_cards` refit per fold, bet
+the argmax lane when its probability clears a threshold, settle at the
+real 単勝 payout. 0 races lacked a payout.
+
+| thresh | bets | % raced | hit% | ROI | lane-1 ROI, same races |
+|---|---|---|---|---|---|
+| 0.00 | 142,884 | 100.0% | 56.4% | 0.9099 | 0.9040 |
+| 0.50 | 90,680 | 63.5% | 66.0% | 0.9138 | 0.9100 |
+| 0.70 | 32,309 | 22.6% | 75.9% | 0.9229 | 0.9207 |
+| 0.80 | 7,386 | 5.2% | 81.3% | 0.9235 | 0.9232 |
+| 0.90 | 147 | 0.1% | 84.4% | 0.8878 | 0.8878 |
+
+**The model beats "always lane 1" by 0.3–0.6 points of ROI — noise —
+despite picking the winner 56.4% of the time against lane 1's ~47%.**
+The accuracy is real and it converts entirely into shorter prices: mean
+payout on the model's winning picks is ≈¥161 against ≈¥192 for lane 1.
+Every race where the model correctly abandons lane 1 is a race the
+market had already marked down. Selectivity helps a little (0.910 →
+0.924) but plateaus around threshold 0.8 and reverses at 0.9 on 147
+bets.
+
+**This is the honest counterweight to P1's log-loss result.** +31.6%
+over uniform and +11.5% over `lane_prior` are real, and they are
+statistical skill the price has already absorbed. Nothing here says the
+model is bad; it says the card features are public and the market reads
+them at least as well.
+
+**What this rules out and what it does not.**
+
+- Ruled out as a path to positive ROI: more first-place accuracy from
+  B-file card features. That axis is saturated — it is already being
+  traded away at fair value.
+- Not tested, and the only two mechanisms left with a plausible story:
+  1. **Selection on price.** Every rule above chose a *lane* and ignored
+     what it cost. ROI is a function of price, and no run has ever
+     selected on one, because no pre-deadline price existed. The cron
+     capture started 2026-08-01 and is the first data that would allow
+     it. This is the single highest-value thing the daily job is
+     accumulating.
+  2. **直前情報** (exhibition time, tilt, 進入変更) — genuinely pre-race
+     signal that is *not* printed on the card, so it is not obviously
+     already in the price at capture time.
+- Untested and separate: exotic bet types. Different takeout, far more
+  combinations, and correspondingly noisier prices — but also far higher
+  variance, so it needs the same discipline, not optimism.
+
+Measured with two throwaway scripts run read-only against the host
+(`measure_baselines.py`, `measure_selectivity.py`); nothing was written
+to the database. Promoting them into `db/evaluate_p2.py` needs
+`Dataset` to carry `race_ids`, which it does not today — the scratchpad
+version reuses `dataset._ROW_SQL`/`_lane_features` to avoid duplicating
+the feature logic while collecting them.
