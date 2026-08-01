@@ -23,8 +23,20 @@ meant inventing data that no available source provides.
    `UNIQUE(venue_id, motor_number, service_period_start)`, and that
    service period is the whole point: motor #12 at Toda in 2007 is a
    physically different motor from motor #12 at Toda in 2020, because
-   fleets are replaced. No source located so far publishes service
-   periods, so any rows written now would assert an identity across 21
+   fleets are replaced.
+
+   **Partially superseded (2026-08-02.)** `venue_regimes.py` now records
+   dated service-period boundaries for the venues where one is known,
+   because the E30 fuel rollout is tied to motor replacement at each
+   venue and is therefore announced. That is a handful of venues from
+   2025-05 onward, not the 21 years these tables would need, so the
+   reasoning below still holds for the archive — but the premise that
+   *no* source publishes service periods is no longer true, and the
+   tables become buildable for the forward period as the rollout
+   completes.
+
+   As of writing, no source located publishes service periods for the
+   historical fleet, so any rows written now would assert an identity across 21
    years that is known to be false, and `race_entries.motor_id` would
    silently join unrelated machines. The numbers and their performance
    rates are instead kept as point-in-time values on `race_entries`
