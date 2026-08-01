@@ -621,10 +621,14 @@ tasks/HANDOFF.md for the evidence behind each line.
    Every rule evaluated so far picked a *lane* and ignored what it cost.
    The 2-minute cron has been accumulating pre-deadline odds since
    2026-08-01; nothing to do but let it run and build the evaluation.
-3. **Wire the per-course stats into the dataset** — tables and loader
-   landed today (`racer_period_stats` / `racer_period_course_stats`,
-   migration `aa3047500d13`). Not yet deployed to .21 and nothing reads
-   them. Joining on lane is an approximation until item 1 lands.
+3. **Wire the per-course stats into the dataset** — tables, loader and
+   data are **deployed and loaded on .21** (2026-08-01): migration
+   `aa3047500d13`, 40,204 period rows / 241,224 course rows over 25
+   periods, `available_at` 2014-07-01 .. 2026-07-01. **Nothing reads them
+   yet.** Joining on lane is an approximation until item 1 lands. Also
+   outstanding: a proper `db/load_fan_archive.py` CLI — the load was run
+   from a one-off script, which is fine for 25 idempotent files but not
+   for the twice-yearly refresh.
 4. **`db/evaluate_p2.py` + `Dataset.race_ids`** — promote the throwaway
    payout-settled evaluation into the repo. Log-loss and ROI were shown
    to disagree, so both belong in the standard runner.
