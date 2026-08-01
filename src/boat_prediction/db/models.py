@@ -70,6 +70,15 @@ meant inventing data that no available source provides.
 6. **`race_meetings.meeting_end_date` is left NULL at load time.** It is
    derivable only by looking at later days of the same series, which is
    future knowledge relative to any race in that series.
+
+7. **Fan-file 期別 statistics get their own point-in-time pair of tables**
+   (`racer_period_stats` / `racer_period_course_stats`), not columns on
+   `racers`. Same principle as deviation 4: these values describe a
+   racer during one half-year period, and writing them onto the identity
+   row would let a 2015 race read a racer's 2026 statistics. The
+   per-course breakdown is a second, narrow table rather than 6x18
+   columns on the first -- see `RacerPeriodCourseStats` for why that
+   shape, and why the breakdown is materialized at all.
 """
 
 from __future__ import annotations
@@ -552,3 +561,134 @@ class WeatherObservation(TimestampMixin, Base):
     # JMA states no per-observation publication timestamp for this page.
     available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
+
+
+class RacerPeriodStats(TimestampMixin, Base):
+    """One racer's 期別 statistics for one application period.
+
+    Source: the モーターボートファン手帳 fixed-width records parsed by
+    `fan_stats_parser.py`. Point-in-time by construction -- see deviation
+    7. Only the 403-character layout (2014 onward) is parseable, so no
+    row exists for an application period before 2014-2.
+
+    `period_year`/`period_number` are the **application** period, not the
+    window the statistics were computed over; the two differ by about
+    eight months and conflating them would be a leak. Measured across all
+    25 parseable files, with no exceptions:
+
+        number 1  <- rated 05-01..10-31, applies from period_year-01-01
+        number 2  <- rated 11-01..04-30, applies from period_year-07-01
+
+    `period_from`/`period_to` keep the rating window the file states, so
+    the distinction stays visible in the data rather than living only in
+    this docstring.
+    """
+
+    __tablename__ = "racer_period_stats"
+    __table_args__ = (UniqueConstraint("racer_id", "period_year", "period_number"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    racer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("racers.id"), nullable=False, index=True
+    )
+    period_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    period_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    period_from: Mapped[dt.date | None] = mapped_column(Date)
+    period_to: Mapped[dt.date | None] = mapped_column(Date)
+
+    racer_class: Mapped[str | None] = mapped_column(String(5))
+    prev_class: Mapped[str | None] = mapped_column(String(5))
+    prev2_class: Mapped[str | None] = mapped_column(String(5))
+    prev3_class: Mapped[str | None] = mapped_column(String(5))
+    prev_ability_index: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    current_ability_index: Mapped[float | None] = mapped_column(Numeric(5, 2))
+
+    win_rate: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    place_rate: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    first_place_count: Mapped[int | None] = mapped_column(Integer)
+    second_place_count: Mapped[int | None] = mapped_column(Integer)
+    start_count: Mapped[int | None] = mapped_column(Integer)
+    championship_appearance_count: Mapped[int | None] = mapped_column(Integer)
+    championship_win_count: Mapped[int | None] = mapped_column(Integer)
+    avg_start_timing: Mapped[float | None] = mapped_column(Numeric(4, 2))
+
+    age: Mapped[int | None] = mapped_column(SmallInteger)
+    height_cm: Mapped[int | None] = mapped_column(SmallInteger)
+    weight_kg: Mapped[int | None] = mapped_column(SmallInteger)
+    blood_type: Mapped[str | None] = mapped_column(String(4))
+    branch: Mapped[str | None] = mapped_column(String(20))
+    hometown: Mapped[str | None] = mapped_column(String(20))
+
+    # Irregular finishes the file records without attributing a course.
+    no_course_l0_count: Mapped[int | None] = mapped_column(Integer)
+    no_course_l1_count: Mapped[int | None] = mapped_column(Integer)
+    no_course_k0_count: Mapped[int | None] = mapped_column(Integer)
+    no_course_k1_count: Mapped[int | None] = mapped_column(Integer)
+
+    # See loader.fan_stats_available_at: midnight JST at the start of the
+    # application period. Later than the file's actual publication (the
+    # filename dates it to just after the rating window closes), which is
+    # the safe direction, and it lines up with the boundary at which the
+    # B-file starts printing the new class.
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
+
+    courses: Mapped[list[RacerPeriodCourseStats]] = relationship(
+        back_populates="period_stats", cascade="all, delete-orphan"
+    )
+
+
+class RacerPeriodCourseStats(TimestampMixin, Base):
+    """One course's (1-6) statistics within a `RacerPeriodStats` row.
+
+    A separate narrow table rather than 6 x 18 columns on the parent: the
+    natural key really is `(racer, period, course)`, six rows read better
+    than 108 columns, and a per-course feature lookup becomes a plain
+    filter instead of dynamic column names.
+
+    Materialized at all -- including the full finish-position breakdown,
+    which an earlier note judged unlikely to be used -- because per-course
+    ability was measured to be the strongest racer attribute found beyond
+    overall skill (persistence 0.49 against a 0.78 control, and 0.58/0.56
+    at courses 1 and 6; see tasks/HANDOFF.md, 2026-08-01). The breakdown
+    is what makes 2連率/3連率 per course derivable, which is what P3's
+    exacta work needs.
+
+    Note this is keyed by **course** (進入), not by lane (枠). They differ
+    whenever 進入変更 occurs, and the only pre-race observation of the
+    actual course is 直前情報's start exhibition, which is not yet
+    captured -- so joining these stats on lane number is an approximation
+    that a caller must make knowingly.
+    """
+
+    __tablename__ = "racer_period_course_stats"
+    __table_args__ = (UniqueConstraint("racer_period_stats_id", "course_number"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    racer_period_stats_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("racer_period_stats.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    course_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+    entry_count: Mapped[int | None] = mapped_column(Integer)
+    place_rate: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    avg_start_timing: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    avg_start_rank: Mapped[float | None] = mapped_column(Numeric(4, 2))
+
+    finish_1_count: Mapped[int | None] = mapped_column(Integer)
+    finish_2_count: Mapped[int | None] = mapped_column(Integer)
+    finish_3_count: Mapped[int | None] = mapped_column(Integer)
+    finish_4_count: Mapped[int | None] = mapped_column(Integer)
+    finish_5_count: Mapped[int | None] = mapped_column(Integer)
+    finish_6_count: Mapped[int | None] = mapped_column(Integer)
+
+    f_count: Mapped[int | None] = mapped_column(Integer)
+    l0_count: Mapped[int | None] = mapped_column(Integer)
+    l1_count: Mapped[int | None] = mapped_column(Integer)
+    k0_count: Mapped[int | None] = mapped_column(Integer)
+    k1_count: Mapped[int | None] = mapped_column(Integer)
+    s0_count: Mapped[int | None] = mapped_column(Integer)
+    s1_count: Mapped[int | None] = mapped_column(Integer)
+    s2_count: Mapped[int | None] = mapped_column(Integer)
+
+    period_stats: Mapped[RacerPeriodStats] = relationship(back_populates="courses")

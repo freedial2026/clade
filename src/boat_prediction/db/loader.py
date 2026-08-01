@@ -50,6 +50,8 @@ from .models import (
     Racer,
     RaceResult,
     RaceResultEntry,
+    RacerPeriodCourseStats,
+    RacerPeriodStats,
     Venue,
     WeatherObservation,
 )
@@ -60,6 +62,7 @@ SOURCE_B_FILE = "boatrace_b_file"
 SOURCE_K_FILE = "boatrace_k_file"
 SOURCE_ODDS = "boatrace_odds"
 SOURCE_JMA_WEATHER = "jma_weather"
+SOURCE_FAN_FILE = "boatrace_fan_file"
 
 _FIXED_ENTRY_MARKER = "進入固定"
 
@@ -208,6 +211,19 @@ _DATA_SOURCE_SEED = (
         "license_note": "公共データ利用規約（第1.0版）: reuse including commercial use "
         "allowed with attribution. Rate-limited fetch, not redistributed in "
         "this repository.",
+    },
+    {
+        "code": SOURCE_FAN_FILE,
+        "name": "モーターボートファン手帳 (racer period statistics)",
+        "provider": "一般財団法人BOATRACE振興会",
+        "source_type": "official_download",
+        "official_url": "https://www.boatrace.jp/owpc/pc/extra/data/layout.html",
+        "terms_url": "https://www.boatrace.jp/owpc/pc/extra/policy.html",
+        "acquisition_method": "scheduled_download",
+        "update_frequency": "semiannual",
+        "license_note": "Official downloadable file. The site prohibits large-volume "
+        "access and redistribution beyond private use; fetched rate-limited and not "
+        "redistributed in this repository.",
     },
 )
 
@@ -940,3 +956,161 @@ __all__ = [
     "scheduled_deadline_at",
     "weather_available_at",
 ]
+
+
+FAN_PERIOD_START_MONTH = {1: 1, 2: 7}
+"""Application-period start month per `period_number`.
+
+Derived from the files, not assumed: across all 25 parseable fan files
+`period_number` 1 always carries a rating window of 05-01..10-31 and
+`period_number` 2 always 11-01..04-30, and the stated `period_year` is
+the year the resulting class applies in. So number 1 applies from
+January of `period_year` and number 2 from July, about two months after
+its rating window closes.
+"""
+
+
+def fan_stats_available_at(period_year: int, period_number: int) -> dt.datetime:
+    """When a fan-file period's statistics are treated as available:
+    midnight JST at the start of the application period, in UTC.
+
+    Deliberately later than the file's real publication -- the filename
+    dates it to just after the rating window closes, roughly two months
+    earlier. Later is the safe direction for a leakage bound, and this
+    particular bound has a second justification: it is the same boundary
+    at which the B-file starts printing the racer's new class, so these
+    statistics never contradict the `listed_class` already stored on
+    `race_entries` for the same date.
+    """
+    month = FAN_PERIOD_START_MONTH.get(period_number)
+    if month is None:
+        raise LoaderError(
+            f"unknown fan-file period_number {period_number!r}; "
+            f"expected one of {sorted(FAN_PERIOD_START_MONTH)}"
+        )
+    return to_utc(dt.datetime.combine(dt.date(period_year, month, 1), dt.time(0, 0), tzinfo=JST))
+
+
+@dataclass
+class FanLoadStats:
+    racers: int = 0
+    period_rows: int = 0
+    course_rows: int = 0
+    replaced: int = 0
+
+    def __str__(self) -> str:
+        return (
+            f"racers={self.racers} period_rows={self.period_rows} "
+            f"course_rows={self.course_rows} replaced={self.replaced}"
+        )
+
+
+def load_fan_records(session: Session, records) -> FanLoadStats:
+    """Load one fan file's parsed records into `racer_period_stats` and
+    `racer_period_course_stats`.
+
+    Idempotent per `(racer, period_year, period_number)`: an existing row
+    for that key is deleted and reinserted rather than merged, matching
+    `load_b_file_day`'s replace-then-reinsert pattern, so a re-load can
+    never leave a half-updated mixture of two parses. The delete goes
+    through the ORM so the course rows cascade identically on SQLite and
+    PostgreSQL.
+
+    A record whose `period_number` is not one the application-period
+    mapping knows raises rather than defaulting, since guessing it would
+    silently mis-date every row in the file.
+    """
+    stats = FanLoadStats()
+    if not records:
+        return stats
+
+    source_id = _source_id(session, SOURCE_FAN_FILE)
+    racers = _resolve_racers(session, [(r.registration_number, r.name_kanji) for r in records])
+    stats.racers = len(racers)
+
+    for record in records:
+        racer = racers[record.registration_number]
+        available_at = fan_stats_available_at(record.period_year, record.period_number)
+
+        existing = session.scalars(
+            select(RacerPeriodStats).where(
+                RacerPeriodStats.racer_id == racer.id,
+                RacerPeriodStats.period_year == record.period_year,
+                RacerPeriodStats.period_number == record.period_number,
+            )
+        ).all()
+        for row in existing:
+            session.delete(row)
+            stats.replaced += 1
+        if existing:
+            session.flush()
+
+        period = RacerPeriodStats(
+            racer_id=racer.id,
+            period_year=record.period_year,
+            period_number=record.period_number,
+            period_from=record.period_from,
+            period_to=record.period_to,
+            racer_class=record.racer_class or None,
+            prev_class=record.prev_class or None,
+            prev2_class=record.prev2_class or None,
+            prev3_class=record.prev3_class or None,
+            prev_ability_index=record.prev_ability_index,
+            current_ability_index=record.current_ability_index,
+            win_rate=record.win_rate,
+            place_rate=record.place_rate,
+            first_place_count=record.first_place_count,
+            second_place_count=record.second_place_count,
+            start_count=record.start_count,
+            championship_appearance_count=record.championship_appearance_count,
+            championship_win_count=record.championship_win_count,
+            avg_start_timing=record.avg_start_timing,
+            age=record.age,
+            height_cm=record.height_cm,
+            weight_kg=record.weight_kg,
+            blood_type=record.blood_type or None,
+            branch=record.branch or None,
+            hometown=record.hometown or None,
+            no_course_l0_count=record.no_course_l0_count,
+            no_course_l1_count=record.no_course_l1_count,
+            no_course_k0_count=record.no_course_k0_count,
+            no_course_k1_count=record.no_course_k1_count,
+            available_at=available_at,
+            source_id=source_id,
+        )
+        session.add(period)
+        stats.period_rows += 1
+
+        for index, summary in enumerate(record.course_summaries):
+            counts = (
+                record.course_position_counts[index]
+                if index < len(record.course_position_counts)
+                else None
+            )
+            period.courses.append(
+                RacerPeriodCourseStats(
+                    course_number=index + 1,
+                    entry_count=summary.entry_count,
+                    place_rate=summary.place_rate,
+                    avg_start_timing=summary.avg_start_timing,
+                    avg_start_rank=summary.avg_start_rank,
+                    finish_1_count=counts.finish_counts[0] if counts else None,
+                    finish_2_count=counts.finish_counts[1] if counts else None,
+                    finish_3_count=counts.finish_counts[2] if counts else None,
+                    finish_4_count=counts.finish_counts[3] if counts else None,
+                    finish_5_count=counts.finish_counts[4] if counts else None,
+                    finish_6_count=counts.finish_counts[5] if counts else None,
+                    f_count=counts.f_count if counts else None,
+                    l0_count=counts.l0_count if counts else None,
+                    l1_count=counts.l1_count if counts else None,
+                    k0_count=counts.k0_count if counts else None,
+                    k1_count=counts.k1_count if counts else None,
+                    s0_count=counts.s0_count if counts else None,
+                    s1_count=counts.s1_count if counts else None,
+                    s2_count=counts.s2_count if counts else None,
+                )
+            )
+            stats.course_rows += 1
+
+    session.flush()
+    return stats
