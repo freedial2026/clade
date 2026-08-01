@@ -66,6 +66,7 @@ SOURCE_ODDS = "boatrace_odds"
 SOURCE_JMA_WEATHER = "jma_weather"
 SOURCE_FAN_FILE = "boatrace_fan_file"
 SOURCE_BEFOREINFO = "boatrace_beforeinfo"
+SOURCE_BOATRACE_OPENAPI = "boatrace_openapi"
 
 _FIXED_ENTRY_MARKER = "進入固定"
 
@@ -227,6 +228,21 @@ _DATA_SOURCE_SEED = (
         "license_note": "Official website. The site prohibits large-volume access; "
         "captured once per race shortly before its deadline (~150 requests/day, "
         "3s apart) and not redistributed in this repository.",
+    },
+    {
+        "code": SOURCE_BOATRACE_OPENAPI,
+        "name": "Boatrace Open API previews (unofficial 直前情報 mirror)",
+        "provider": "BoatraceOpenAPI (community project)",
+        "source_type": "third_party_mirror",
+        "official_url": "https://boatraceopenapi.github.io/previews/",
+        "terms_url": "https://github.com/BoatraceOpenAPI/previews",
+        "acquisition_method": "bulk_download",
+        "update_frequency": "few_hours",
+        "license_note": "MIT, community-run mirror of the official 直前情報 pages. "
+        "Explicitly unofficial and disclaims accuracy; cross-validated against the "
+        "official page on 2026-07-30 (147/150 boat values identical, the 3 others a "
+        "start-timing sign convention). Used for backfill only -- too stale for a "
+        "pre-deadline decision, and it carries no weather observation label.",
     },
     {
         "code": SOURCE_FAN_FILE,
@@ -1153,6 +1169,9 @@ def load_before_info(
     race_id,
     info,
     observed_at: dt.datetime,
+    available_at: dt.datetime | None = None,
+    source_code: str = SOURCE_BEFOREINFO,
+    parts_known: bool = True,
 ) -> BeforeInfoLoadStats:
     """Store one race's 直前情報, captured live before its deadline.
 
@@ -1169,6 +1188,16 @@ def load_before_info(
     The start-exhibition rows are joined onto the boat rows by lane, so
     `start_exhibition_course` lands on the boat that took that course --
     the point of capturing this at all, since 進入 need not equal the lane.
+
+    `available_at` defaults to `observed_at`, which is right for a live
+    capture. A backfill must pass its own conservative bound instead: the
+    fetch happened long after the fact and proves nothing about when the
+    values were published.
+
+    `parts_known=False` writes NULL for `propeller_changed` and
+    `parts_replaced` rather than `False` and `""`. The Open API mirror
+    does not carry them, and recording an absence that was never observed
+    is the one thing this module refuses to do everywhere else.
     """
     stats = BeforeInfoLoadStats()
     if not info.has_exhibition_data:
@@ -1182,7 +1211,8 @@ def load_before_info(
         stats.skipped_already_captured += 1
         return stats
 
-    source_id = _source_id(session, SOURCE_BEFOREINFO)
+    source_id = _source_id(session, source_code)
+    available_at = available_at or observed_at
     start_by_lane = {entry.lane_number: entry for entry in info.start_exhibition}
 
     for boat in info.boats:
@@ -1195,13 +1225,13 @@ def load_before_info(
                 adjustment_weight_kg=boat.adjustment_weight_kg,
                 exhibition_time_sec=boat.exhibition_time_sec,
                 tilt_angle=boat.tilt_angle,
-                propeller_changed=boat.propeller_changed,
-                parts_replaced=",".join(boat.parts_replaced) or None,
+                propeller_changed=boat.propeller_changed if parts_known else None,
+                parts_replaced=(",".join(boat.parts_replaced) or None) if parts_known else None,
                 start_exhibition_course=start.course_number if start else None,
                 start_exhibition_st_sec=start.start_timing_sec if start else None,
                 start_exhibition_is_flying=start.is_flying if start else None,
                 observed_at=observed_at,
-                available_at=observed_at,
+                available_at=available_at,
                 source_id=source_id,
             )
         )
@@ -1222,7 +1252,7 @@ def load_before_info(
                 weather_text=w.weather_text,
                 weather_icon_code=w.weather_icon_code,
                 observed_at=observed_at,
-                available_at=observed_at,
+                available_at=available_at,
                 source_id=source_id,
             )
         )
