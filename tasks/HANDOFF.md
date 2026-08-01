@@ -1666,3 +1666,56 @@ way.
 **Net effect on the plan**: exotics are not the escape hatch. The
 remaining route is unchanged and is still selection on pre-deadline
 price, which is now accumulating.
+
+## 直前情報 backfilled, and the article's feature is the weakest part of it (2026-08-01)
+
+Backfilled from the Open API mirror: **1,094,253 boat rows over 182,375
+races, 2023-05-01 to 2026-08-01**, 99.99% carrying an exhibition time and
+98.4% a start-exhibition ST. **8.16% of boat rows show 進入変更** — the
+course actually taken differs from the lane — which is exactly the
+fraction for which joining `racer_period_course_stats` on lane number is
+wrong, and which nothing else in the schema can see.
+
+Also completed: `race_results.winning_method` backfilled across the whole
+archive — **1,152,001 updated, 11,930 races with no technique stated
+(cancelled or void), 0 not found, 0 failures.**
+
+### The result
+
+Same discipline as everything today: log-loss *and* return settled at
+real 単勝 payouts. 26 folds, 175,025 races, 99.9% with 直前情報.
+
+| variant | log-loss | vs base | folds won | ROI @0.00 | @0.50 | @0.70 |
+|---|---|---|---|---|---|---|
+| baseline | 1.21163 | — | — | 0.9098 | 0.9137 | 0.9214 |
+| exhibition ST z-score | 1.20973 | +0.157% | 25/26 | 0.9091 | 0.9142 | 0.9243 |
+| **full 直前情報 block** | **1.19427** | **+1.433%** | **26/26** | **0.9163** | **0.9191** | **0.9295** |
+
+**The external write-up named the exhibition ST z-score as its decisive
+feature. On this data it is the weakest thing in the block**: +0.157% of
+log-loss and a ROI that is flat to slightly *negative* at threshold 0.
+
+**And the proxy beat the real thing.** The stand-in built earlier today —
+a racer's ST averaged over their last ten racing days, z-scored within
+the race — returned +0.751% and +0.0056 ROI, roughly five times the
+log-loss gain of the actual exhibition ST. The likely reason is plain
+once stated: the exhibition ST is *one* start on *one* day, while the
+proxy averages ten. The direct measurement is fresher and much noisier,
+and the noise wins.
+
+That is worth keeping as a general caution: "measured today, on this
+water, minutes before the race" sounds strictly better than a lagged
+average, and here it is not.
+
+**Where the value actually is**: the full block (ST z-score, exhibition
+*time* z-score, tilt, 進入変更 flag) is nearly ten times better than the
+ST z-score alone and wins **26 of 26 folds**. So the work is being done
+by 展示タイム, tilt or 進入 — not by the start. 展示タイム is the natural
+candidate: it measures boat speed over a timed solo run, which is the
+"what would this boat do alone" quantity nothing else in the schema
+observes. **Not decomposed** — which component carries it is untested.
+
+**Best result of the session: ROI 0.9295** at threshold 0.70, against
+0.9214 baseline and 0.9254 for the earlier proxy. Break-even remains
+1.0000, so this is 7 points short. The 26.41% takeout still dominates
+every effect found today; this is the largest of them, not an escape.
