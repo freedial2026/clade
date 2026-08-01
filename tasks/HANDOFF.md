@@ -1132,3 +1132,67 @@ to add to a good one. But the magnitude is small (sd ≈ 0.013 in score
 units, roughly a fifth of raw racer-ability differences) and persistence
 of 0.14 against a 0.78 control is weak. Worth one feature, not worth a
 research programme — and clearly subordinate to course aptitude.
+
+## 予選→優勝: the card rate ages, the motors do not converge (2026-08-01)
+
+Re-opened after the earlier "no drift" conclusion was challenged on the
+grounds that motors and propellers are worked on between 予選 and 決勝.
+The challenge was right that the earlier test was insufficient, for two
+reasons worth recording:
+
+1. It used **calendar-day lags**, ignoring the 予選 → 準優 → 優勝
+   structure the question is actually about.
+2. More seriously, **finish position is relative to the field, so it is
+   zero-sum.** If every crew improves its motor across the six days, no
+   finish-based metric can see it *at all*. The earlier conclusion was
+   therefore only ever about *differential* change, and did not say so.
+
+**First test — the gap does narrow.** Motors classified into terciles by
+the card's 2連率 on the racer's first day of that 節 (fixed there; the
+card rate updates daily, so classifying per race would let the label
+absorb the performance being measured), 予選 only so no selection
+compression, residual = score − venue×lane mean:
+
+| 節 day | bottom | middle | top | top−bottom |
+|---|---|---|---|---|
+| 1 | −0.0163 | −0.0036 | 0.0209 | **0.0372** |
+| 2 | −0.0153 | −0.0037 | 0.0194 | 0.0348 |
+| 3 | −0.0158 | −0.0036 | 0.0188 | 0.0345 |
+| 4 | −0.0150 | −0.0052 | 0.0174 | **0.0324** |
+
+−13% from day 1 to day 4. Two explanations fit: the motors converge
+(tuning), or the pre-節 card rate simply ages.
+
+**Second test separates them.** Rebuild the label from the motor's *own
+results on days 1-2 of the same 節* — in-節, so it cannot go stale in the
+way the card rate can — then hold it fixed and measure at growing
+distance:
+
+| 節 day | in-節 label gap | card label gap |
+|---|---|---|
+| 3 | 0.1585 | 0.0340 |
+| 4 | 0.1572 (**−0.8%**) | 0.0321 (**−5.5%**) |
+
+**The in-節 label does not decay; only the card rate does.** If the
+motors were genuinely being changed, a label measured on days 1-2 would
+lose power by day 4 too — the thing it describes would have moved. It is
+flat. So: the card's 2連率 ages, and relative standing within a 節 is
+essentially set by days 1-2.
+
+Two things this does **not** say:
+
+- It measures the racer+motor+boat package, not the motor alone. The
+  in-節 label includes racer skill, which is constant across the 節. That
+  does not affect the drift conclusion (racer skill does not drift
+  either) but it does mean the 4.7× figure below is not motor-specific.
+- **Uniform improvement across all crews remains invisible**, by
+  construction. Only 展示タイム — an absolute, solo measurement — could
+  see it, and the database holds 5,829 of them against 6,984,306 entries
+  (0.08%). This is the sharpest argument yet for the 直前情報 capture.
+
+**Actionable**: two days of in-節 results carry a **4.7× larger** gap
+(0.1585 vs 0.0340) than the season motor rate does. `dataset.py` shrinks
+`meeting_form_score` toward the season win rate with
+`MEETING_FORM_SHRINKAGE_STARTS = 3.0`; that weight was chosen a priori,
+and this measurement suggests it is too strong. Worth a sweep — not yet
+run.
