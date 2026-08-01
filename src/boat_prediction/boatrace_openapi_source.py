@@ -38,6 +38,13 @@ serve a pre-deadline decision.
 2. **Parts replacement and propeller changes.** Absent entirely. The
    adapter reports this through `parts_known=False` rather than writing
    `False`, which would assert an absence that was never observed.
+
+**The feed is not shape-stable.** On most dates a race's `boats` is a
+list; on others it is a dict keyed by lane number as a string
+(`{"1": {...}, ..., "6": {...}}`), with identical inner records. A first
+backfill run failed on 112 of 1,188 days for exactly this, so both shapes
+are accepted below. That is the practical cost of a third-party mirror
+and the reason the run reports failures per day rather than stopping.
 """
 
 from __future__ import annotations
@@ -114,6 +121,19 @@ def _start_timing(value) -> tuple[float | None, bool]:
     return abs(number), number < 0
 
 
+def _boat_entries(race: dict):
+    """The race's boat records, whichever shape the feed used.
+
+    Most dates give a list; some give a dict keyed by lane number as a
+    string. Iterating the dict directly yields its keys, which is how a
+    first backfill lost 112 days to `string indices must be integers`.
+    """
+    boats = race.get("boats") or ()
+    if isinstance(boats, dict):
+        return list(boats.values())
+    return list(boats)
+
+
 def _boat(entry: dict) -> tuple[BoatBeforeInfo, StartExhibitionEntry]:
     lane = int(entry["racer_boat_number"])
     timing, is_flying = _start_timing(entry.get("racer_start_timing"))
@@ -177,7 +197,7 @@ def parse_previews(payload: dict, *, race_date: dt.date | None = None) -> list[P
             raise BoatraceOpenApiError("race has no date and none was supplied")
 
         boats, starts = [], []
-        for entry in race.get("boats", ()):
+        for entry in _boat_entries(race):
             boat, start = _boat(entry)
             boats.append(boat)
             starts.append(start)

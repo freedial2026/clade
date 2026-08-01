@@ -148,6 +148,26 @@ class ParsePreviewsTest(unittest.TestCase):
         for race_number in range(1, 13):
             self.assertFalse(weather.is_safe_for_race(race_number))
 
+    def test_boats_as_a_dict_parses_identically(self) -> None:
+        """The feed is not shape-stable: some dates key boats by lane
+        number as a string. A first backfill lost 112 days to this."""
+        as_list = SAMPLE["previews"][0]["boats"]
+        as_dict = {str(b["racer_boat_number"]): b for b in as_list}
+        payload = {"previews": [dict(SAMPLE["previews"][0], boats=as_dict)]}
+
+        listed = parse_previews(SAMPLE)[0]
+        keyed = parse_previews(payload)[0]
+
+        self.assertEqual(len(keyed.info.boats), 6)
+        self.assertEqual(
+            [b.exhibition_time_sec for b in keyed.info.boats],
+            [b.exhibition_time_sec for b in listed.info.boats],
+        )
+        self.assertEqual(
+            [s.course_number for s in keyed.info.start_exhibition],
+            [s.course_number for s in listed.info.start_exhibition],
+        )
+
     def test_unknown_venue_is_skipped_not_fatal(self) -> None:
         payload = {"previews": [dict(SAMPLE["previews"][0], stadium_number=99)]}
 
