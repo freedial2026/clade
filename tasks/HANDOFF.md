@@ -1261,3 +1261,71 @@ carrying the same motor and boat all week, so a good motor that week
 inflates a pair's residual. That adds noise within a period rather than
 across them, so it attenuates the correlation rather than manufacturing
 it — 0.1429 is if anything conservative.
+
+## 得意会場 is weak, and it fails in lane 1 and in seeded races (2026-08-01)
+
+Proposed design: extract each racer's strong venue from per-venue
+performance, then invert the question and find the conditions under which
+that advantage stops holding. Two traps were designed out rather than
+caveated — strength is fit on 2013–2019 and the advantage measured
+entirely on 2020–2026, so regression to the mean has already happened;
+and the condition set was fixed at five splits in advance, so this is not
+a hunt.
+
+**A. 得意会場 is real but much weaker than course aptitude.**
+
+| attribute | persistence |
+|---|---|
+| racer main effect (control) | 0.7843 |
+| racer × lane (course aptitude) | 0.4933 |
+| **racer × venue (得意会場)** | **0.1592** |
+
+Three times weaker than course aptitude, against the same control. The
+reason is visible in the method: the baseline is the (venue, lane) mean,
+so "this venue favours the inside" is already removed, and what remains
+for venue aptitude is small. Much of the folk 得意会場 effect is the venue's
+own lane bias, not the racer.
+
+**B. Where the advantage breaks.** 6,723 (racer, venue) pairs with an
+edge in period 1; their period-2 advantage is **+0.0070** overall
+(n=430,551), and by condition:
+
+| condition | bucket | n | advantage | vs overall |
+|---|---|---|---|---|
+| lane | **4-6** | 203,359 | +0.0158 | **+0.0088** |
+| lane | 2-3 | 148,109 | +0.0031 | −0.0039 |
+| lane | **1** | 79,083 | **−0.0084** | **−0.0154** |
+| race | unseeded | 401,944 | +0.0109 | +0.0039 |
+| race | **seeded (準優/優勝)** | 28,607 | **−0.0477** | **−0.0547** |
+| wind | calm / moderate / windy | ~125k each | +0.0046 … +0.0096 | ±0.003 |
+| rain | dry / rain | 239k / 132k | +0.0073 / +0.0076 | ±0.001 |
+| temp | cold / mild / hot | ~127k each | +0.0063 … +0.0094 | ±0.003 |
+
+Three readings:
+
+1. **Venue knowledge is worth nothing in lane 1 and everything outside
+   it.** The advantage inverts at lane 1 (−0.0084) and is strongest at
+   lanes 4-6 (+0.0158). Physically consistent: 逃げ from the inside is
+   the most automatic outcome in the sport, while making a まくり work
+   from outside is where knowing the water, the current and the turn
+   actually pays.
+2. **Weather does nothing at all.** All three weather splits land within
+   ±0.003 of the overall figure — a clean null on the proposal to use
+   気象条件 to characterise a 得意会場. Two readings, and they are not
+   exclusive: the effect may not exist, and the measurement is certainly
+   coarse (JMA *daily* averages from the nearest *land* station, not
+   race-time water surface). 直前情報 carries the real thing, which is one
+   more argument for capturing it.
+3. **The seeded number is large but partly confounded.** −0.0477 is a
+   sign flip, not a shrinkage. But seeded fields compress every positive
+   residual — the motor-tercile gap also fell (0.0293 → ~0.0199) in the
+   same rounds — and the racer main effect subtracted here is computed
+   over all races, so a strong racer under-performs it in a final by
+   construction. The move here (+0.0109 → −0.0477) is much larger than
+   the ~32% compression seen elsewhere, so something beyond compression
+   is likely, but separating them needs a control group of
+   overall-strong-but-not-venue-specialist racers. Not yet run.
+
+If (3) survives that control it is directly actionable: discount 得意会場
+in 準優/優勝戦. It would also rhyme with the P1 phase breakdown, where the
+card-feature edge was smallest in exactly those seeded rounds.
