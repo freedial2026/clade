@@ -965,3 +965,69 @@ to the database. Promoting them into `db/evaluate_p2.py` needs
 `Dataset` to carry `race_ids`, which it does not today — the scratchpad
 version reuses `dataset._ROW_SQL`/`_lane_features` to avoid duplicating
 the feature logic while collecting them.
+
+## Within-meeting form: no tuning drift, but it is contaminated by lane luck (2026-08-01)
+
+Prompted by the question of whether the motor and propeller are modified
+during a 節. `dataset.py`'s docstring justifies the within-meeting form
+feature on the motor and boat being "drawn once per 節 and kept all
+series" — true of the *individual*, but the crew tunes it (整備, propeller
+adjustment, parts replacement), so the quantity being averaged might be
+moving. A flat mean would then be the wrong estimator.
+
+**Tested, and drift is not supported.**
+
+1. Mean-of-earlier-days vs single-most-recent-day, 1,882,348
+   racer-meeting-day pairs: the mean wins in **every one of 22 years**,
+   0.3006 vs 0.1964. Not conclusive on its own — the mean averages ≥2
+   days, so its noise advantage is confounded with recency.
+2. Like-for-like, single day against single day at lags 1/2/3 (same
+   rows, same sample size): drift would force monotonic decay. Instead
+   lag 1 is the *lowest* of the three and lag 2 the peak — 0.1590 /
+   0.1838 / 0.1750 pre-2011, 0.2098 / 0.2351 / 0.2235 from 2011.
+
+**The lag-1 dip is lane rotation, not drift.** Lanes rotate across a 節,
+so yesterday's lane is systematically unlike today's while two days ago
+may line up better. Re-running the lag test on a lane-adjusted score
+(score minus that lane's own mean) over 4,513,744 pairs:
+
+| score | lag1 | lag2 | lag3 | lag1−lag2 |
+|---|---|---|---|---|
+| raw | 0.1394 | 0.1635 | 0.1567 | −0.0240 |
+| lane-adjusted | 0.1442 | 0.1478 | 0.1415 | **−0.0037** |
+
+Adjusting removes ~85% of the anomaly and leaves a **flat** profile
+across lags — which is the direct answer: within-meeting form behaves as
+a static quantity, so the flat mean is the right estimator and no
+recency weighting is warranted.
+
+**But the same test exposes a real defect in the feature.** The lane
+effect is far larger than the signal: mean score by lane runs 0.7649
+(lane 1) down to 0.4563 (lane 6), a spread of 0.31, against a total
+within-meeting persistence of ~0.14. `meeting_form_score` averages raw
+scores with **no lane adjustment**, so a racer who happened to draw
+inside lanes earlier in the 節 scores high on "form" for reasons that
+have nothing to do with how the boat is going.
+
+Fixing it has a leakage constraint that must not be glossed over: the
+lane baselines cannot be computed over the whole archive and then used
+in a 2023 prediction. They must come from data strictly before the
+prediction — either recomputed per training window, or frozen as
+constants derived from an early slice (they move by ~0.01 across eras,
+so a 2005–2010 slice is both stable and safely in the past for every
+evaluation window used so far). Not yet implemented.
+
+**Also settled: the propeller regime change is not visible here.**
+持ちペラ (racer-owned propellers) ran 1988-05 to **2012-04**, when
+venues began lending propellers with the motor. Within-meeting
+persistence rises gradually from 2005 (0.228) to about 2015 (0.327) and
+is flat after, with the largest single step at 2010→2011 — a year
+*before* the rule change, and 2012→2013 is flat (0.3074 → 0.3088). So
+the abolition left no mark on this metric and the 2011 step has no
+identified cause. Note the naive story predicts the opposite sign
+anyway: a racer's own propeller is also constant across a 節, so
+persistence should have been *higher* under 持ちペラ, and it was lower.
+
+Sources for the propeller dates:
+[マクール](https://sp.macour.jp/columns/macour_timemachine/176266/),
+[競艇大全](https://kyougikai2020.jp/mochipera/).
