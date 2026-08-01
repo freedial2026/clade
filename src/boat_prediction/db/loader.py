@@ -40,6 +40,7 @@ from .models import (
     RACE_STATUS_FINISHED,
     RACE_STATUS_SCHEDULED,
     VENUE_NAMES,
+    BeforeInfoEntry,
     DataSource,
     ExhibitionEntry,
     OddsSnapshot,
@@ -52,6 +53,7 @@ from .models import (
     RaceResultEntry,
     RacerPeriodCourseStats,
     RacerPeriodStats,
+    RaceSurfaceCondition,
     Venue,
     WeatherObservation,
 )
@@ -63,6 +65,7 @@ SOURCE_K_FILE = "boatrace_k_file"
 SOURCE_ODDS = "boatrace_odds"
 SOURCE_JMA_WEATHER = "jma_weather"
 SOURCE_FAN_FILE = "boatrace_fan_file"
+SOURCE_BEFOREINFO = "boatrace_beforeinfo"
 
 _FIXED_ENTRY_MARKER = "進入固定"
 
@@ -211,6 +214,19 @@ _DATA_SOURCE_SEED = (
         "license_note": "公共データ利用規約（第1.0版）: reuse including commercial use "
         "allowed with attribution. Rate-limited fetch, not redistributed in "
         "this repository.",
+    },
+    {
+        "code": SOURCE_BEFOREINFO,
+        "name": "BOATRACE 直前情報 (exhibition, tilt, start exhibition, surface weather)",
+        "provider": "一般財団法人BOATRACE振興会",
+        "source_type": "official_website",
+        "official_url": "https://www.boatrace.jp/owpc/pc/race/beforeinfo",
+        "terms_url": "https://www.boatrace.jp/owpc/pc/extra/policy.html",
+        "acquisition_method": "scheduled_scrape",
+        "update_frequency": "per_race",
+        "license_note": "Official website. The site prohibits large-volume access; "
+        "captured once per race shortly before its deadline (~150 requests/day, "
+        "3s apart) and not redistributed in this repository.",
     },
     {
         "code": SOURCE_FAN_FILE,
@@ -1111,6 +1127,106 @@ def load_fan_records(session: Session, records) -> FanLoadStats:
                 )
             )
             stats.course_rows += 1
+
+    session.flush()
+    return stats
+
+
+@dataclass
+class BeforeInfoLoadStats:
+    boat_rows: int = 0
+    weather_rows: int = 0
+    skipped_no_exhibition: int = 0
+    skipped_already_captured: int = 0
+
+    def __str__(self) -> str:
+        return (
+            f"boat_rows={self.boat_rows} weather_rows={self.weather_rows} "
+            f"skipped_no_exhibition={self.skipped_no_exhibition} "
+            f"skipped_already_captured={self.skipped_already_captured}"
+        )
+
+
+def load_before_info(
+    session: Session,
+    *,
+    race_id,
+    info,
+    observed_at: dt.datetime,
+) -> BeforeInfoLoadStats:
+    """Store one race's 直前情報, captured live before its deadline.
+
+    `available_at` is `observed_at`: unlike every other source in this
+    module, the availability of these values is not inferred from a
+    publication convention -- the fetch itself is the evidence, and it is
+    the fetch that a leakage check should compare against the deadline.
+
+    A page fetched before the exhibition run has the boat list but no
+    times (`has_exhibition_data` is False). Nothing is written in that
+    case, so the next scheduled run retries it rather than a blank row
+    permanently standing in for a reading that did arrive later.
+
+    The start-exhibition rows are joined onto the boat rows by lane, so
+    `start_exhibition_course` lands on the boat that took that course --
+    the point of capturing this at all, since 進入 need not equal the lane.
+    """
+    stats = BeforeInfoLoadStats()
+    if not info.has_exhibition_data:
+        stats.skipped_no_exhibition += 1
+        return stats
+
+    existing = session.scalar(
+        select(BeforeInfoEntry.id).where(BeforeInfoEntry.race_id == race_id)
+    )
+    if existing is not None:
+        stats.skipped_already_captured += 1
+        return stats
+
+    source_id = _source_id(session, SOURCE_BEFOREINFO)
+    start_by_lane = {entry.lane_number: entry for entry in info.start_exhibition}
+
+    for boat in info.boats:
+        start = start_by_lane.get(boat.lane_number)
+        session.add(
+            BeforeInfoEntry(
+                race_id=race_id,
+                lane_number=boat.lane_number,
+                weight_kg=boat.weight_kg,
+                adjustment_weight_kg=boat.adjustment_weight_kg,
+                exhibition_time_sec=boat.exhibition_time_sec,
+                tilt_angle=boat.tilt_angle,
+                propeller_changed=boat.propeller_changed,
+                parts_replaced=",".join(boat.parts_replaced) or None,
+                start_exhibition_course=start.course_number if start else None,
+                start_exhibition_st_sec=start.start_timing_sec if start else None,
+                start_exhibition_is_flying=start.is_flying if start else None,
+                observed_at=observed_at,
+                available_at=observed_at,
+                source_id=source_id,
+            )
+        )
+        stats.boat_rows += 1
+
+    if info.weather is not None:
+        w = info.weather
+        session.add(
+            RaceSurfaceCondition(
+                race_id=race_id,
+                raw_label=w.raw_label,
+                reference_race_number=w.reference_race_number,
+                air_temperature_c=w.air_temperature_c,
+                water_temperature_c=w.water_temperature_c,
+                wind_speed_ms=w.wind_speed_ms,
+                wind_direction_code=w.wind_direction_code,
+                wave_height_cm=w.wave_height_cm,
+                weather_text=w.weather_text,
+                weather_icon_code=w.weather_icon_code,
+                observed_at=observed_at,
+                available_at=observed_at,
+                source_id=source_id,
+            )
+        )
+        stats.weather_rows += 1
 
     session.flush()
     return stats

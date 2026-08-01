@@ -746,3 +746,93 @@ class RacePrediction(TimestampMixin, Base):
     features_available_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+
+
+class BeforeInfoEntry(TimestampMixin, Base):
+    """One boat's 直前情報 (`beforeinfo_source.py`), captured before the race.
+
+    Distinct from `exhibition_entries` on purpose, and the difference is
+    the whole reason this table exists. That table holds the exhibition
+    time as read from the *post-race* K-file, so its `available_at` is
+    results-time and `feature_availability.py` correctly refuses it for
+    any pre-race prediction (deviation 5). These rows are fetched from the
+    live 直前情報 page before the deadline, so their `available_at` is the
+    fetch itself and they are genuinely usable as features.
+
+    Do not merge the two. A single table would have to carry one
+    availability semantics for rows that honestly have two.
+
+    `start_exhibition_course` is the reason this matters most: 進入 can
+    differ from the lane, the per-course racer statistics in
+    `racer_period_course_stats` are keyed by *course*, and this is the
+    only pre-race observation of which course a boat actually took.
+
+    `parts_replaced` keeps the page's own part names, comma-joined. No
+    mapping to a code list has been verified, so the raw text is stored
+    rather than a guess.
+    """
+
+    __tablename__ = "before_info_entries"
+    __table_args__ = (UniqueConstraint("race_id", "lane_number", "observed_at"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    race_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("races.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    lane_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+    weight_kg: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    adjustment_weight_kg: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    exhibition_time_sec: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    tilt_angle: Mapped[float | None] = mapped_column(Numeric(3, 1))
+    propeller_changed: Mapped[bool | None] = mapped_column(Boolean)
+    parts_replaced: Mapped[str | None] = mapped_column(Text)
+
+    start_exhibition_course: Mapped[int | None] = mapped_column(SmallInteger)
+    start_exhibition_st_sec: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    start_exhibition_is_flying: Mapped[bool | None] = mapped_column(Boolean)
+
+    observed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
+
+
+class RaceSurfaceCondition(TimestampMixin, Base):
+    """Water-surface conditions from the same 直前情報 page.
+
+    Race-level rather than per-boat, and kept in its own table because the
+    page reports one reading shared by every boat.
+
+    **The label is stored, not just the numbers, and that is a leakage
+    control.** The page states its observation point in one of two forms:
+    `"NR時点"` (observed at race N) or `"HH:MM現在"` (a wall clock). Fetched
+    from the archive the second form is the *day's latest* reading and
+    using it would feed an early race hours of future weather --
+    `beforeinfo_source.SurfaceWeather.is_safe_for_race` rejects it for
+    exactly that reason. A live capture is different: the fetch happened
+    before this race's deadline, so `observed_at` proves the reading
+    existed in time whatever the label says. `raw_label` and
+    `reference_race_number` are preserved so a later analysis can tell a
+    live row from a backfilled one and apply the right rule to each.
+    """
+
+    __tablename__ = "race_surface_conditions"
+    __table_args__ = (UniqueConstraint("race_id", "observed_at"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    race_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("races.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    raw_label: Mapped[str | None] = mapped_column(String(40))
+    reference_race_number: Mapped[int | None] = mapped_column(SmallInteger)
+    air_temperature_c: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    water_temperature_c: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_speed_ms: Mapped[float | None] = mapped_column(Numeric(4, 1))
+    wind_direction_code: Mapped[int | None] = mapped_column(SmallInteger)
+    wave_height_cm: Mapped[float | None] = mapped_column(Numeric(5, 1))
+    weather_text: Mapped[str | None] = mapped_column(String(20))
+    weather_icon_code: Mapped[int | None] = mapped_column(SmallInteger)
+
+    observed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
