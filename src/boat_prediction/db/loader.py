@@ -609,6 +609,11 @@ def load_k_file_day(
             result = RaceResult(
                 race_id=race.id,
                 confirmed_at=available_at,
+                # 決まり手, which the K-file writes at the end of the race's
+                # column-header line rather than on a data row -- see
+                # kfile_parser._RESULT_HEADER_RE. None when the file does
+                # not state one.
+                winning_method=parsed_race.winning_method,
                 available_at=available_at,
                 source_id=source_id,
             )

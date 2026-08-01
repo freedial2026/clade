@@ -36,6 +36,17 @@ _RACE_HEADER_RE = re.compile(r"^\s*(\d{1,2})R\s")
 # "中止" is written with an embedded ideographic space in real files
 # ("中　止"), so the marker is matched after stripping U+3000.
 _CANCELLED_MARKER = "中止"
+
+# The winning technique is written at the end of the *column header* line,
+# not on any data row:
+#
+#   着 艇 登番 選手名 ﾓｰﾀｰ ﾎﾞｰﾄ 展示 進入 ｽﾀｰﾄﾀｲﾐﾝｸ ﾚｰｽﾀｲﾑ まくり差し
+#
+# which is why a parser that treats that line as a header and discards it
+# loses the field entirely. Matched on the leading 着/艇 columns so the
+# trailing token can be taken whatever it says.
+_RESULT_HEADER_RE = re.compile(r"^\s*着\s*艇\s*登番")
+_RACE_TIME_LABEL = "ﾚｰｽﾀｲﾑ"
 _PAYOUT_LABELS = frozenset({"単勝", "複勝", "２連単", "２連複", "拡連複", "３連単", "３連複"})
 
 
@@ -71,6 +82,11 @@ class ParsedRace:
     race_number: int
     entries: list[RaceEntryResult] = field(default_factory=list)
     payouts: list[RacePayout] = field(default_factory=list)
+    winning_method: str | None = None
+    """決まり手 (逃げ/差し/まくり/まくり差し/抜き/恵まれ), read from the end of
+    the race's column-header line. `None` for a race that produced no
+    result, and for one whose header carries no technique -- which is the
+    honest reading, since the file simply does not say."""
     is_cancelled: bool = False
     """True when the file marks this race 中止 (called off, typically
     weather). Such a race legitimately has no entries and no payouts, so
@@ -185,6 +201,7 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
     current_race: ParsedRace | None = None
     current_payout_label: str | None = None
     cancelled_races: set[int] = set()
+    winning_methods: dict[int, str] = {}
 
     def flush_venue() -> None:
         if current_venue_code is not None:
@@ -195,6 +212,9 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
                     # `replace` keeps the shared entries/payouts lists, so
                     # nothing parsed into them is lost by re-stamping the flag
                     race = replace(race, is_cancelled=True)
+                method = winning_methods.get(race.race_number)
+                if method:
+                    race = replace(race, winning_method=method)
                 races.append(race)
             venues.append(ParsedVenueDay(venue_code=current_venue_code, races=races))
 
@@ -207,6 +227,7 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
             current_race = None
             current_payout_label = None
             cancelled_races = set()
+            winning_methods = {}
             continue
 
         header_match = _RACE_HEADER_RE.match(line)
@@ -219,6 +240,13 @@ def parse_k_file_text(text: str) -> list[ParsedVenueDay]:
             continue
 
         if current_race is None:
+            continue
+
+        if _RESULT_HEADER_RE.match(line):
+            _, _, trailing = line.rstrip().partition(_RACE_TIME_LABEL)
+            method = trailing.strip()
+            if method:
+                winning_methods[current_race.race_number] = method
             continue
 
         entry = _parse_entry_line(line)

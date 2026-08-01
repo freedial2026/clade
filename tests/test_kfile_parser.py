@@ -235,3 +235,48 @@ class CancelledRaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WinningMethodTest(unittest.TestCase):
+    """決まり手 lives at the end of the column-header line, not on a data
+    row, which is why a parser that discards headers loses it entirely."""
+
+    HEADER = (
+        "  着 艇 登番 　選　手　名　　ﾓｰﾀｰ ﾎﾞｰﾄ 展示 進入 ｽﾀｰﾄﾀｲﾐﾝｸ ﾚｰｽﾀｲﾑ まくり差し"
+    )
+
+    def _text(self, header: str) -> str:
+        return chr(10).join(
+            [
+                "01KBGN",
+                "  1R   予選                    H1800m  晴　  風  南西　 2m  波　  2cm",
+                header,
+                "-" * 60,
+                "  01  1 4444 試　験　　太　郎 11   22  6.71   1    0.17     1.59.9",
+                "01KEND",
+            ]
+        )
+
+    def test_reads_the_technique_from_the_header_line(self) -> None:
+        race = parse_k_file_text(self._text(self.HEADER))[0].races[0]
+
+        self.assertEqual(race.winning_method, "まくり差し")
+
+    def test_each_technique_value_round_trips(self) -> None:
+        for method in ("逃げ", "差し", "まくり", "まくり差し", "抜き", "恵まれ"):
+            header = self.HEADER.replace("まくり差し", method)
+            race = parse_k_file_text(self._text(header))[0].races[0]
+            self.assertEqual(race.winning_method, method, method)
+
+    def test_a_header_without_a_technique_leaves_it_none(self) -> None:
+        """Silence in the file must not become a guess."""
+        header = self.HEADER.replace(" まくり差し", "")
+
+        race = parse_k_file_text(self._text(header))[0].races[0]
+
+        self.assertIsNone(race.winning_method)
+
+    def test_the_header_line_is_not_mistaken_for_an_entry(self) -> None:
+        race = parse_k_file_text(self._text(self.HEADER))[0].races[0]
+
+        self.assertEqual(len(race.entries), 1)
