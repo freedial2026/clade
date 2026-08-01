@@ -1523,3 +1523,62 @@ and no retrain policy is set. Retraining is safe for the record (the
 `model_version` on every row makes the boundary visible) but should be a
 decision, not a drift. Also still outstanding: a `db/load_fan_archive.py`
 CLI, and nothing yet reads either the per-course stats or 直前情報.
+
+## Within-race ST z-score: the first feature today to survive the payout test (2026-08-01)
+
+Idea taken from an external write-up
+(https://aijikan.com/2026/04/19/boatrace-ai-claude-code-roi/) which names
+the *exhibition* ST z-score as the decisive addition to its LightGBM
+model. The transform is right for a reason this project had already
+arrived at from the other direction: in a six-class problem a quantity
+shared by all six boats cannot change who wins, and the absolute ST level
+in a race is dominated by shared terms — the venue, the day's water, how
+hard the field is pushing. Z-scoring within the race removes those and
+leaves the only discriminating part.
+
+Exhibition ST does not exist historically (0 rows), so the same idea was
+tested with what does: `race_result_entries.actual_st_sec`, 6.87 M
+realised start timings, aggregated to (racer, **day**) before windowing so
+that a result earlier the *same* day can never enter — `results_available_at`
+puts a result at midnight after its race, and making that structural
+beats making it a condition. A racer with no history falls back to the
+field mean (z = 0) with a companion indicator, rather than dropping the
+race; that affects 0.55% of lanes.
+
+Same 31 folds and 142,884 races as every other run today:
+
+| | log-loss | ROI @0.00 | ROI @0.50 | ROI @0.70 |
+|---|---|---|---|---|
+| baseline | 1.21143 | 0.9091 | 0.9155 | 0.9223 |
+| **+ ST z-score** | **1.20233** (+0.751%) | **0.9147** | **0.9206** | **0.9254** |
+
+**All four improve.** That is the finding, and it is what nothing else
+today managed: the card features improved log-loss and lost the whole
+gain to the price, and the gradient-boosted tree improved neither.
+
+Read it at its real size, though: +0.5 ROI points against a 26.41%
+takeout. The best figure anywhere is now 0.9254, and break-even is
+1.0000. This is the same order as every other effect measured today, not
+an escape from it.
+
+**A bug nearly turned this into a null result.** The first run filtered
+normal finishes with `rre.status IS NULL`; a normal finish carries
+`'01'`..`'06'` and is never NULL, so the aggregate was empty, every
+z-score was 0, and the comparison would have read as "the feature does
+nothing". It was caught only because the run printed its coverage —
+"races with any ST history: 0" — rather than only its result. Corrected
+to `finish_position IS NOT NULL`, which also excludes the F rows whose
+stored ST is not on the same scale.
+
+**Why this raises the value of the 直前情報 backfill.** What was tested is
+a *proxy*: a racer's ST tendency over their last ten racing days. The
+article's feature is the exhibition ST — measured that day, in those
+conditions, minutes before the race. The proxy already pays, so the
+direct measurement plausibly pays more, and it is now being captured
+daily. Backfilling the archive window is the way to test it on more than
+one day of data.
+
+**Not measured**: per-fold consistency. The aggregate covers 31 folds and
+142,884 races, but the "wins in N of 31 folds" check that was applied to
+`logistic_cards` was not applied here, so the claim is an average, not a
+demonstrated per-fold win.
