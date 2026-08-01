@@ -89,11 +89,19 @@ def odds_url(target_date: date, venue_code: str, race_number: int) -> str:
 def _fetch(url: str, opener: object | None) -> str:
     opener = opener or urllib.request
     request = opener.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        with opener.urlopen(request, timeout=20) as response:
-            return response.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with opener.urlopen(request, timeout=20) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except (TimeoutError, OSError) as exc:
+            if attempt < max_retries - 1:
+                wait_seconds = 2 ** attempt
+                time.sleep(wait_seconds)
+                continue
+            raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
+        except Exception as exc:
+            raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
 
 
 def fetch_odds_page(
