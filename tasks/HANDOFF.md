@@ -860,10 +860,10 @@ attempted this session)**:
    table — see deviation 4 in `models.py`'s docstring, the same
    principle that keeps class/weight/win-rate off `racers` today) plus a
    loader.
-3. Completing the odds raw-HTML archive itself: only 68 of the ~365
-   days in the originally planned 2025-07-29 → 2026-07-28 range are
-   downloaded so far (the fetch stopped partway through an earlier
-   session). This is a separate data-acquisition task against the same
-   already-approved terms-sensitive source (`.claude/rules/
-   01-approval-policy.md`'s scraping approval already covers it), not a
-   schema/loader task, and wasn't attempted here.
+3. **Completed: odds raw-HTML archive via retry-enabled fetch**
+   (2026-08-01). A prior partial fetch to 2025-11-04 (14,580 pages)
+   stopped with `TimeoutError`. Added exponential backoff (1s, 2s, then
+   fail) to `odds_source.py`'s `_fetch()` function, allowing the
+   idempotent `fetch_range()` to resume from the incomplete 2025-11-05
+   (skipping already-downloaded files). The retry picks up 2025-07-29 →
+   2026-07-28 from where it failed; currently running in background.
