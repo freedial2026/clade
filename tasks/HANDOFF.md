@@ -1451,3 +1451,75 @@ Three routes remain, and only these:
 3. **直前情報** — public, but absent from the card, so the question is
    whether the price absorbs it fully in the minutes before close, which
    is again a price question rather than an accuracy one.
+
+## Collection prioritised: predictions and 直前情報 now captured daily (2026-08-01)
+
+Direction taken: weight effort toward accumulating data, collect anything
+plausibly needed, and stop collecting later if validation says it is not.
+The asymmetry justifies it — a day not captured can never be recaptured,
+while an analysis can be redone whenever. Two gaps were closed.
+
+### Prospective predictions (`race_predictions`, `db/predict_daily.py`)
+
+The forward half of the P2 test. `capture_odds` had been recording
+pre-deadline quotes since this morning; nothing recorded what the model
+believed at the same moment, and reconstructing that later would make the
+record a backtest wearing a forward test's clothes.
+
+Deployed and run for today: **105 of 156 races** predicted (51 already
+past their deadline), 630 rows, 0 races dropped for a missing feature.
+Model frozen as `logistic_cards_20260731`, trained 2023-01-01..2026-07-31
+and registered with a verified artifact checksum — `predict_daily` cannot
+fit anything, which is asserted in the tests by passing a model with no
+`fit` method.
+
+Leakage invariants, all measured on the real rows: 0 predictions after a
+deadline, 0 features available after their prediction, 0 races without
+exactly six lanes, margin 1-481 minutes before the deadline.
+
+A check flagged 4 races whose probabilities did not sum to 1. Chased
+down: the maximum deviation is 0.000002, which is `Numeric(8,6)` rounding
+six values (bound 3e-6). Not a defect — the check's tolerance was tighter
+than the column's own precision.
+
+**Probabilities are stored; decisions are not.** No rule measured today
+is positive-EV, so committing to one would freeze a policy this project
+does not believe in and invalidate the accumulated record every time the
+policy changed. Storing the inputs leaves the decision rule free.
+
+### 直前情報 (`before_info_entries`, `race_surface_conditions`)
+
+The one genuinely pre-race source never collected, and today's
+measurements pointed at it three separate times.
+
+First live capture: **8 races due, 5 stored** (30 boat rows, 5 weather
+rows), 3 fetched before their exhibition run and therefore deliberately
+not written — the next scheduled run retries them, which is the whole
+reason a blank row is never written. Captured 5-16 minutes before the
+deadline. All weather rows carried the safe `"NR時点"` form.
+
+**3 of 30 boat rows already show 進入変更** (start course ≠ lane). That is
+10%, and it is exactly what nothing else in the schema can see: the
+per-course statistics loaded this morning are keyed by *course*, the card
+gives only the *lane*, and joining them on lane is wrong for those rows.
+
+### Schedule now running on .21
+
+| JST | job | requests/day |
+|---|---|---|
+| 06:30 | `ingest_daily card` | ~1 |
+| **06:45** | **`predict_daily`** | **0 (DB only)** |
+| every 2 min (even), 08-21 | `capture_odds` | ~300 |
+| **every 2 min (odd), 08-21** | **`capture_beforeinfo`** | **~150** |
+| 02:00 | `ingest_daily results` | ~1 |
+
+The new capture runs on odd minutes so it interleaves with the odds
+capture rather than firing alongside it; each job paces its own requests
+3 s apart, so the combined worst case is well under one request per
+second.
+
+**What to revisit rather than assume**: the frozen model will go stale,
+and no retrain policy is set. Retraining is safe for the record (the
+`model_version` on every row makes the boundary visible) but should be a
+decision, not a drift. Also still outstanding: a `db/load_fan_archive.py`
+CLI, and nothing yet reads either the per-course stats or 直前情報.
