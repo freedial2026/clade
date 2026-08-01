@@ -1031,3 +1031,104 @@ persistence should have been *higher* under 持ちペラ, and it was lower.
 Sources for the propeller dates:
 [マクール](https://sp.macour.jp/columns/macour_timemachine/176266/),
 [競艇大全](https://kyougikai2020.jp/mochipera/).
+
+## Interactions, course aptitude and tuning skill, all measured (2026-08-01)
+
+Three questions about what the model is not capturing, answered on real
+data. One of them is the session's first *positive* result.
+
+### Six-boat combination effects: additive, no exploitable interaction
+
+`logistic_cards` is linear, so it already learns "lane 1 is worse when
+lane 4 is strong" — what it cannot learn is a conditional effect, e.g.
+lane 4's particular strength threatening lane 1 more than its general
+strength implies. A gradient-boosted tree finds those without being told
+where to look, so the linear-vs-GBDT gap measures how much the *combination*
+of six boats matters beyond their sum.
+
+`HistGradientBoostingClassifier` (already in the host's scikit-learn;
+LightGBM/CatBoost are not installed and installing them on a shared host
+to answer a question that does not need it would be the wrong trade),
+same 31 folds and 142,884 races:
+
+| model | mean log-loss | ROI @0.00 | ROI @0.70 |
+|---|---|---|---|
+| logistic | **1.21148** | 0.9089 | 0.9229 |
+| histgbt | 1.22995 (−1.52%) | 0.9084 | 0.9207 |
+
+**The tree loses on both metrics.** Untuned, so this is not "no
+interaction exists" — but it is strong evidence that the card features'
+signal is close to additive, consistent with everything else measured
+today.
+
+### Course aptitude: REAL, persistent, and concentrated at the extremes
+
+Method: temporal split (2015–2020 vs 2021–2026), expectation removed
+per **venue × lane × motor-bucket** (venue matters — racers race
+disproportionately at their home venue and venues differ in how much the
+inside lane dominates, so a lane effect pooled across venues would
+manufacture persistence), then the racer's own main effect removed. What
+is left is the racer × lane interaction. Persistence is the weighted
+early-vs-late correlation; the racer main effect is carried as a control
+because it is known real and calibrates the scale.
+
+| | persistence |
+|---|---|
+| racer main effect (control) | 0.7843 |
+| **racer × lane, all lanes** | **0.4933** |
+| — lane 1 | 0.5760 |
+| — lane 2 | 0.3586 |
+| — lane 3 | 0.2360 |
+| — lane 4 | 0.2254 |
+| — lane 5 | 0.3066 |
+| — lane 6 | 0.5649 |
+
+**U-shaped, and the shape is the interpretation.** Lanes 1 and 6 demand
+specialised technique (逃げ; まくり/大外), and aptitude there persists at
+~0.57 — over 70% of the control. Lanes 3-4 are dominated by 展開, which
+is a property of the *field*, not of the racer, and persistence collapses
+to ~0.23 accordingly.
+
+Not controlled: race-class composition. A racer in stronger events faces
+better opponents, but that shifts all their lanes together and is absorbed
+by the main effect, so it is unlikely to explain a lane-*specific*
+residual.
+
+**This settles the open fan-file scope question** (item 6 in
+tasks/CURRENT.md). The per-course breakdown was described there as "most
+of the per-course finish/irregular-count breakdown is unlikely to ever be
+used as a feature". That is now measurably wrong: per-course ability is
+the strongest genuine racer attribute found so far beyond overall skill,
+and the fan-file is the only source that publishes it directly. Build the
+per-course columns.
+
+### Tuning skill (調整力): real but small, and only on bad motors
+
+Identification is clean here: **motors are drawn by lottery at the start
+of a 節**, so motor quality is exogenous to racer skill — no selection to
+argue about.
+
+A first version of this test was wrong and would have been reported as a
+strong positive. It subtracted only the lane × motor-bucket expectation
+and not the racer's own level, so its residual was mostly just racer
+ability and "persisted" at 0.76 — indistinguishable from the control at
+0.75, which is exactly what should have given it away. 調整力 is not "is
+this racer good", it is "does this racer's edge *change* with motor
+quality", i.e. the racer × motor-bucket interaction, which requires the
+main effect removed.
+
+Corrected:
+
+| motor tercile | persistence | sd of interaction |
+|---|---|---|
+| worst third | **0.1400** | 0.0134 |
+| middle third | 0.0515 | 0.0129 |
+| best third | 0.0447 | 0.0131 |
+
+**The gradient is the finding**: the interaction is ~3× more persistent
+on the worst motors than the best — precisely the signature 調整力 would
+produce, since a good tuner has room to improve a bad motor and nothing
+to add to a good one. But the magnitude is small (sd ≈ 0.013 in score
+units, roughly a fifth of raw racer-ability differences) and persistence
+of 0.14 against a 0.78 control is weak. Worth one feature, not worth a
+research programme — and clearly subordinate to course aptitude.
