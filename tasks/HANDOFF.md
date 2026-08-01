@@ -1582,3 +1582,87 @@ one day of data.
 142,884 races, but the "wins in N of 31 folds" check that was applied to
 `logistic_cards` was not applied here, so the claim is an average, not a
 demonstrated per-fold win.
+
+## Three external write-ups checked against the data (2026-08-01)
+
+| source | claim | validation | bet type | takeout discussed |
+|---|---|---|---|---|
+| aijikan.com | ROI **96.3%** | backtest only, split undisclosed | 単勝 | yes (25%) |
+| ai-moneygame.com | 回収率 **120.4-131.4%** | backtest + two anecdotes | 3連複 | **no** |
+| note.com/codenai_san | **4x** (¥10k → ¥40k) | live, ~8 bets | 3連単/3連複 | **no** |
+
+**Only the first reports a number consistent with everything measured
+here — and it is a loss.** 96.3% is below the 100% break-even; the
+article's framing against a 75% random baseline makes it read as a
+success. It also settles on "履歴平均オッズ" rather than the actual price,
+which biases upward for a reason this project measured directly today:
+the model's accuracy converts into *shorter* prices (mean winning payout
+¥161 against ¥192 for lane 1), and an average-odds settlement hides that
+conversion entirely.
+
+The second does not reconcile arithmetically. Case 1 gives 1,248 races,
+hit rate 38.7%, average odds 4.2x — that is 0.387 x 4.2 = **1.625**,
+against a claimed 1.314. The gap implies ~1.24 combinations staked per
+race, which is never stated, so the headline cannot be checked from the
+numbers given. 3連複 has 20 combinations, so a 38.7% hit rate requires
+multiple tickets and the denominator matters entirely.
+
+The third carries no information about ROI at all: ~8 bets on a bet type
+whose favourite pays 7.36x means a single hit swings the result by
+several hundred percent. Its NDCG@3 of 0.9006 is quoted without a
+baseline, and in a six-boat field where lane 1 wins ~52% a trivial
+lane-ordering baseline already scores high — the same trap as this
+project's own "31% better than uniform", which turned out to be entirely
+priced.
+
+### Is any exotic bet type a softer market? Measured: no.
+
+The claims all move to exotics, and that was *not* something these
+measurements had refuted — more combinations plausibly means a crowd
+pricing a bigger space with the same attention. Tested two ways from
+recorded payouts alone, 2015 onward, ~634,000 races per bet type.
+
+**Flat bet on every combination** (returns `(1-t) x mean(p/m)`):
+
+| bet type | combos | flat return | p99/median payout |
+|---|---|---|---|
+| 単勝 | 6 | **0.6840** | 14.4x |
+| ２連単 | 30 | 0.6180 | 21.3x |
+| ２連複 | 15 | 0.6200 | 15.6x |
+| ３連単 | 120 | 0.6086 | **28.6x** |
+| ３連複 | 20 | 0.6207 | 14.2x |
+
+**Backing the k-th favourite every race** (from `popularity_rank`, which
+the K-file does not record for 単勝):
+
+| bet type | rank 1 | rank 2 | rank 3 | rank 5 | rank 10 |
+|---|---|---|---|---|---|
+| ２連単 | 0.7485 | 0.7733 | 0.7847 | 0.7766 | 0.7008 |
+| ２連複 | 0.7593 | 0.8153 | **0.8194** | 0.7350 | 0.5684 |
+| ３連単 | 0.7605 | 0.7692 | 0.7663 | 0.7796 | 0.7656 |
+| ３連複 | 0.7603 | 0.7757 | 0.7898 | 0.7674 | 0.6690 |
+
+Two conclusions:
+
+1. **No exotic favourite beats 単勝's lane 1 at 0.86.** The best figure
+   anywhere is 0.8194 (2連複, 3rd favourite). 3連複 specifically — the bet
+   type the 120% article recommends — returns 0.7603 to its favourite,
+   has the *same* payout dispersion as 単勝 (14.2x vs 14.4x), and a worse
+   flat portfolio. Its recommendation is not supported on any axis
+   measurable here.
+2. **Exotic markets are flat across ranks 1-5** (0.75-0.79), so the
+   popular end is priced about as efficiently as 単勝's is. The
+   favourite-longshot distortion lives in the deep longshots (rank 10
+   falls to 0.57-0.70), which is the worst place to try to collect it.
+
+The flat-portfolio numbers should not be read as takeouts: the nominal
+rate is regulated at ~25% and the excess is the same favourite-longshot
+bias measured this morning. Exotics look worse there largely because most
+of their combinations *are* longshots, which is a property of spreading
+money evenly, not of the market a selective bettor faces. The
+favourite-backing table is the fairer comparison, and it points the same
+way.
+
+**Net effect on the plan**: exotics are not the escape hatch. The
+remaining route is unchanged and is still selection on pre-deadline
+price, which is now accumulating.
