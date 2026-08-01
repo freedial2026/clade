@@ -19,19 +19,33 @@ schema revision `57a2b01ded66`). Raw source files sit under
 
 | source | what | terms | how obtained |
 |---|---|---|---|
-| **B-file** (番組表) | race cards | official download, robots.txt permissive | `b_file_source.py`, 3 s rate limit |
+| **B-file** (番組表) | race cards | official download | `b_file_source.py`, 3 s rate limit |
 | **K-file** (競走成績) | results, payouts | same | `official_source.py` |
 | **boatrace.jp odds** | 締切時オッズ, live pre-deadline | site prohibits large-volume access | `odds_source.py`, ~300 req/day |
 | **boatrace.jp 直前情報** | exhibition, tilt, 進入, surface weather | same | `beforeinfo_source.py`, ~150 req/day |
 | **JMA** | daily weather per venue | 公共データ利用規約 1.0 | `jma_weather_source.py` |
 | **ファン手帳** | racer period stats incl. per-course | official download | `fan_file_source.py` |
-| **Boatrace Open API** | 直前情報 mirror, 2023-05+ | MIT, **unofficial, deprecated repo** | `boatrace_openapi_source.py` |
+| **Boatrace Open API** | 直前情報 mirror, 2023-05+ | **unofficial**; repo deprecated. MIT covers the *code*, not the underlying data | `boatrace_openapi_source.py` |
 
 The Open API is a third-party mirror and is treated as such: it was
 cross-validated against the official page before use (147 of 150
 boat-level values identical; the three that differed were a start-timing
 sign convention). It is used for **backfill only** — it updates every few
 hours and could never serve a pre-deadline decision.
+
+**Two things about terms that are easy to get wrong, and were:**
+
+- A repository's MIT licence covers **its code**, not the content it
+  mirrors. The underlying BOATRACE data carries its own rights and the
+  mirror cannot grant them. An earlier version of this table implied
+  otherwise.
+- **A permissive `robots.txt` is not permission.** It states what a
+  crawler may fetch; it says nothing about licensing, redistribution, or
+  the site policy's prohibition on large-volume access. The rate limits
+  in the table are this project's own restraint, not a stated ceiling.
+
+Raw HTML, video and comment text are held for internal research and are
+not redistributed.
 
 ### Raw archive (host)
 
