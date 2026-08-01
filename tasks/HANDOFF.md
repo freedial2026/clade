@@ -1761,3 +1761,87 @@ which is exactly the size of the tilt result.
 
 Best figure stands at ROI **0.9285-0.9295** for the full block at
 threshold 0.70, against a break-even of 1.0000.
+
+## Conditions: the market compresses, and calm water is a lane game (2026-08-01)
+
+Two measurements, both made possible by the 直前情報 backfill, which
+supplies *race-time surface* conditions where the JMA data already loaded
+is a daily average from the nearest land station -- and showed no effect
+at all, plausibly for being too coarse.
+
+Race 1 is excluded throughout. The mirrored surface reading carries no
+observation label, and for race 1 the official page shows a wall clock
+which, fetched after the fact, is the day's *last* reading — confirmed on
+a real page timestamped six hours after race 1's deadline. Including it
+would be scoring tomorrow's weather against today's result.
+
+### Does the market price the conditions?
+
+The question is not whether wind and waves change results — they plainly
+do — but whether the crowd moves the price by the right amount. In a
+pari-mutuel pool the return is `(1-t) · p/m`, so **the win rate may vary
+across conditions all it likes; if pricing is correct the return will
+not.**
+
+| conditions | races | lane-1 win% | **lane-1 return** | lane-6 return | flat six |
+|---|---|---|---|---|---|
+| stable (wind ≤2, wave ≤2) | 73,430 | 56.39% | **0.9181** | 0.3509 | 0.6570 |
+| middling | 64,835 | 53.42% | 0.9034 | 0.3952 | 0.6940 |
+| unstable (wind ≥5 or wave ≥6) | 26,656 | 49.71% | **0.8667** | 0.3990 | 0.7129 |
+
+**It does not.** The return moves 5.1 points, monotonically, on all three
+cuts (wind alone, wave alone, combined) — twenty-five times the measured
+noise floor of ~0.002. Lane 1 is underbet in every bucket (`p/m` = 1.248
+stable, 1.178 unstable) but *more* underbet in calm water: **the market
+compresses, moving the price less than the probability moves.** Lane 6
+mirrors it (0.3509 → 0.3990), and the flat six-lane portfolio is
+correspondingly better calibrated in rough water than in calm.
+
+### What each factor is actually worth
+
+Same scale for all of them — win-probability points. Lane is measured
+across lanes; **every other factor is measured within lane and then
+averaged**, because the lane effect is large enough to leak into and
+inflate everything else if it is not held fixed.
+
+| factor | stable | middling | unstable |
+|---|---|---|---|
+| **lane 1 vs lane 6** | **53.4%** | 50.2% | **46.2%** |
+| racer win rate, top vs bottom third | 13.1% | 13.6% | **13.9%** |
+| racer class A1 vs B2 | 10.5% | 11.1% | **12.0%** |
+| **exhibition time, fastest vs slowest third** | **3.1%** | 2.8% | 2.7% |
+| **motor 2連率, top vs bottom third** | **2.4%** | 2.5% | 2.1% |
+
+1. **Lane dominates by a factor of four.** 53.4 points against 13.1 for
+   the best racer measure.
+2. **Calm water is a lane game; rough water gives skill room.** Lane
+   falls 53.4 → 46.2 while the racer measures rise. The folk version of
+   this is old; this is it on one scale.
+3. **Motor is small — 2.1-2.5 points**, about a fifth of the racer effect
+   and a twentieth of lane, despite the attention 2連率 gets. It also
+   explains the earlier 調整力 result: if the motor *main* effect is this
+   size, an interaction on top of it must be smaller still.
+4. **Exhibition time beats the season motor rate** (3.1 vs 2.4 in calm
+   water), and is strongest exactly where raw speed shows through. That
+   is the same conclusion the feature decomposition reached from the
+   other direction.
+
+Caveat: these are marginal effects within lane, not partial effects net
+of each other. Racer class and racer win rate overlap heavily. Motor
+against racer is a fair comparison, since motors are drawn by lottery.
+
+### The tension this creates
+
+**Room and reward point in opposite directions.** Calm water is where the
+market misprices lane 1 most (0.9181) but also where a model has least to
+add, since lane explains almost everything. Rough water is where skill
+assessment has the most room (racer 13.9 against lane 46.2) but where
+backing the favourite pays worst (0.8667).
+
+Any price-selection rule built later has to face that directly rather
+than assume the two line up.
+
+**Not yet measured**: whether "stable conditions" and "high model
+confidence" are largely the same races. They probably overlap heavily —
+the model should be more confident in calm water — so the two filters may
+not stack, and assuming they do would overstate any combined rule.
