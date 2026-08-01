@@ -1329,3 +1329,66 @@ Three readings:
 If (3) survives that control it is directly actionable: discount 得意会場
 in 準優/優勝戦. It would also rhyme with the P1 phase breakdown, where the
 card-feature edge was smallest in exactly those seeded rounds.
+
+## F持ち: the mechanism is real, and the market under-prices it (2026-08-01)
+
+The first genuinely promising money-side finding. Practitioners hold that
+a racer carrying a flying start in the current 級別審査期間 cannot risk a
+second one, starts cautiously, and that this weakens the inside lane.
+Nothing on the card states it as a number.
+
+Everything needed was already in the database, from three directions that
+only converged today: `race_result_entries.status = 'F'` (27,866 rows),
+`actual_st_sec` (the realised start timing, so the claimed *mechanism* is
+directly measurable rather than inferred), and the rating-period
+boundaries, which were established this morning from the fan files and are
+exactly the window in which an F counts.
+
+**Design.** Each racer compared before vs after **their own first F of a
+period**, within the same racer and period, so class and skill are fixed.
+Control: racer-periods with no F, split at the midpoint of their own
+racing, which absorbs any within-period time trend. The effect is the
+difference of the differences.
+
+| metric | F group | control | **DiD** |
+|---|---|---|---|
+| lane 1 mean ST | +0.0167 | −0.0028 | **+0.0195** |
+| lane 1 win% | −6.71 pt | +0.58 pt | **−7.29 pt** |
+| **lane 1 return** | −0.0765 | +0.0004 | **−0.0769** |
+| lane 6 mean ST | +0.0309 | −0.0047 | +0.0356 |
+| lane 6 win% | −0.84 pt | +0.22 pt | −1.06 pt |
+| lane 6 return | −0.0671 | +0.0045 | −0.0715 |
+
+All-lane ST: the F group goes 0.1605 → 0.1830 while the control goes
+0.1713 → 0.1675. **They measurably slow down**, by about 0.02 s, which is
+the size of gap that decides starts.
+
+**The third row is the finding.** If the market priced this, the odds
+would lengthen exactly enough to leave the return unchanged — that is
+what pricing *means*. Instead backing an F-holding lane 1 returns 0.8482
+against 0.9032 for a comparable non-F racer: **7.7 points of return that
+the market does not take out.** Every other effect measured today was
+either priced away or too small; this one is neither.
+
+An F-holder underperforms in *every* lane, not only lane 1 — the caution
+costs everywhere, and lane 1 simply has the most to lose.
+
+**Caveats, neither of which the ST evidence supports away entirely:**
+
+- Selection into "after": an F brings 斡旋停止, so later races may be at
+  different venues and grades, and the racer's whole situation may have
+  worsened. The DiD control absorbs calendar trend, not this.
+- The F group's *before* lane-1 win rate is 55.42% against the control's
+  51.93%, i.e. racers who commit an F are the aggressive, faster-starting
+  ones, so some reversion is expected. But reversion does not make a
+  racer's measured ST 0.02 s slower; that is a behavioural change, and it
+  is the mechanism the theory predicts.
+
+**Immediate follow-up, not yet run — and this is the buyable side.** The
+7.3 points of win probability that leave lane 1 have to arrive somewhere,
+and lane 6 does not gain them either (it also falls). So they go to lanes
+2-5. If the market under-adjusts lane 1, it very likely under-adjusts
+those too, which would make **the other boats in an F-holder's race
+underpriced**. That is a positive-EV direction rather than an avoidance
+rule, and it is the first candidate of the whole session that could
+survive a payout test. Test it next.
