@@ -1196,3 +1196,68 @@ Two things this does **not** say:
 `MEETING_FORM_SHRINKAGE_STARTS = 3.0`; that weight was chosen a priori,
 and this measurement suggests it is too strong. Worth a sweep — not yet
 run.
+
+## 相性 (racer-vs-racer matchup): real but small, and finals are the worst place to look (2026-08-01)
+
+Re-opened after the claim that pairwise matchups are unidentifiable was
+challenged on the grounds that finals and big tournaments draw from a
+small pool, so the same racers meet repeatedly. The challenge was right
+that the original argument was bad — it counted pairs across the whole
+population (1,600 racers → 1.3M pairs) and concluded "hopeless" without
+looking at the actual encounter distribution.
+
+**Measured, 2013 onward, head-to-head within a race:**
+
+| scope | pairs | encounters | median | max | ≥15 | ≥30 |
+|---|---|---|---|---|---|---|
+| all races | 1,655,506 | 11,102,034 | 4 | 216 | **171,228** | 28,005 |
+| 優勝戦/準優勝戦 only | 321,977 | 598,949 | **1** | 42 | 1,022 | 69 |
+
+Both halves of the original position were wrong, in opposite directions:
+
+- **The whole population is far richer than claimed** — 171,228 pairs
+  have 15+ encounters. "Hopeless" was simply false.
+- **But the elite/final subset is the poorest place to estimate it**, not
+  the richest. A 節 produces one final, so pair encounters there are
+  *scarcer* than in ordinary racing: median 1, and only 69 pairs reach 30.
+  Restricting to big tournaments to get denser matchups does the opposite.
+
+**Persistence test.** Head-to-head outcome, minus the base rate for that
+lane pair, minus each racer's own strength — what survives is "A beats B
+more than their individual strengths predict", i.e. the non-transitive
+part. Temporal split 2013–2019 vs 2020–2026.
+
+| | persistence |
+|---|---|
+| racer strength (control) | 0.7825 |
+| pair residual, uncontrolled | 0.1778 |
+| **pair residual, venue-controlled** | **0.1429** |
+
+The uncontrolled figure could not be read as 相性: pairs that meet often
+share a venue, venue aptitude is real (see the course-aptitude entry), so
+a venue specialist beating a visitor would look exactly like matchup.
+Recomputing every quantity **within venue** — base rate per
+(venue, lane_a, lane_b), and each racer's strength per venue — removes
+about a fifth of it. The rest survives.
+
+**So 相性 is real and small.** Persistence 0.14 against a 0.78 control is
+~18% of the scale of racer strength; with an observed residual sd of
+0.0967, the persistent part implies roughly ±3.7 percentage points on a
+head-to-head probability.
+
+This does **not** contradict the GBDT result above. That tree had only
+*card* features, and pairwise matchup is an identity-level effect no card
+column can express. The two together say: the card features are additive,
+and the non-additive part that does exist lives in racer identity, which
+nothing in the current feature set can reach.
+
+Practical reading: if 相性 is ever built, build it from **all races**,
+never from the finals — and expect a marginal feature, not an edge. Given
+that today's P2 result showed larger effects than this being fully priced,
+it is not a promising place to spend next.
+
+Remaining confound, not removed: pairs meet repeatedly *within one 節*
+carrying the same motor and boat all week, so a good motor that week
+inflates a pair's residual. That adds noise within a period rather than
+across them, so it attenuates the correlation rather than manufacturing
+it — 0.1429 is if anything conservative.

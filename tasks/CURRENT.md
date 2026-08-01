@@ -7,10 +7,14 @@
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
 - Last handoff: first application of this schema to a **live
-  PostgreSQL** (previously only in-memory SQLite). See the
-  "192.168.11.21 deployment" entry at the end of tasks/HANDOFF.md.
+  PostgreSQL** (previously only in-memory SQLite).
 
 ## Runtime target: 192.168.11.21 (`boat.internal`)
+
+**How to connect and run things there is in
+`.claude/rules/11-runtime-host.md`, which is loaded every session.** It
+is settled; do not re-derive it or ask about it. What follows is the
+host's state, not its access procedure.
 
 Verified state as of 2026-07-31:
 
@@ -602,28 +606,44 @@ this matters later.
 
 ## Next, in order
 
-1. ~~Full B/K load, fix deployment, five-day re-load, meeting
-   rebuild.~~ **Done 2026-07-31** — see "21-year load and repair
-   completed" below.
-2. `python -m boat_prediction.db.load_odds_archive` on the host — the
-   odds pages are already transferred but nothing has loaded them yet.
-3. `alembic upgrade head` (picks up `9e24c5ea64e2`) then
-   `python -m boat_prediction.db.load_jma_archive` on the host — the
-   jma/ pages are already transferred but nothing has loaded them yet.
-4. **P0 and P1 are done** on real data, including the phase breakdown
-   and a (negative-result) calibration check (see above). P2 is next
-   and is the one with a data problem, not a code problem: the archived
-   odds are stamped at the deadline, so they can score calibration
-   against the market but cannot support a decision made before betting
-   closed. The pre-deadline series started accumulating on 2026-08-01
-   via cron. Until it is long enough, a P2 run can only be a
-   market-comparison study, not a paper simulation anyone should
-   believe.
-5. `motors`/`boats` tables: still on hold until a source with real
-   service periods is found.
-6. Decide and build the fan-file DB table + loader (parser is done;
-   see above for the scope-of-columns decision that's still open).
+Reordered 2026-08-01 after a day of measurement against real data. See
+tasks/HANDOFF.md for the evidence behind each line.
 
-Before any real use: re-run P0-P2 against the real data, confirm the P2
-forward test is genuinely stable, then seek separate approval for any
-promotion beyond paper operation. See tasks/HANDOFF.md.
+1. **直前情報 capture** — now the best-argued item, for three independent
+   reasons that all landed today: 展示タイム is the only *absolute*
+   (non-zero-sum) measure of boat speed and the DB holds 0.08% of them;
+   improvement common to all crews within a 節 is invisible without it;
+   and per-course ability is real, but the fan-file publishes it by
+   **course** while we only observe **lane** — 進入 is observable pre-race
+   only here. Staging plan unchanged (match the odds window first,
+   ~12,000 pages, then daily incremental).
+2. **Selection on price** — the only untested mechanism for positive ROI.
+   Every rule evaluated so far picked a *lane* and ignored what it cost.
+   The 2-minute cron has been accumulating pre-deadline odds since
+   2026-08-01; nothing to do but let it run and build the evaluation.
+3. **Wire the per-course stats into the dataset** — tables and loader
+   landed today (`racer_period_stats` / `racer_period_course_stats`,
+   migration `aa3047500d13`). Not yet deployed to .21 and nothing reads
+   them. Joining on lane is an approximation until item 1 lands.
+4. **`db/evaluate_p2.py` + `Dataset.race_ids`** — promote the throwaway
+   payout-settled evaluation into the repo. Log-loss and ROI were shown
+   to disagree, so both belong in the standard runner.
+5. **Cheap dataset fixes with measured justification**: sweep
+   `MEETING_FORM_SHRINKAGE_STARTS` (in-節 evidence carries a 4.7x larger
+   gap than the season motor rate), and lane-adjust `meeting_form_score`
+   (the lane spread is 0.31 against a 0.14 signal) using
+   train-window-derived baselines so it stays leakage-free.
+6. `motors`/`boats` tables: still on hold until a source with real
+   service periods is found.
+
+**Closed today, do not re-open without new evidence**: more first-place
+accuracy from card features (saturated and priced in — the model beats
+"always lane 1" by 0.3–0.6 ROI points while picking the winner 56.4% of
+the time against ~47%); tree ensembles / automatic interaction search
+(HistGBT lost to the linear model on both log-loss and ROI); 調整力 as a
+research theme (persistence 0.14, sd 0.013); 相性 (real but ~±3.7pp, and
+finals are the worst place to estimate it, not the best).
+
+Before any real use: confirm the P2 forward test on genuinely
+pre-deadline prices, then seek separate approval for any promotion beyond
+paper operation. See tasks/HANDOFF.md.
