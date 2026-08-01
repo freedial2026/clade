@@ -62,7 +62,33 @@ from .loader import JST
 from .models import OddsSnapshot, Race, Venue
 from .session import create_db_engine, create_session_factory
 
-DEFAULT_LEAD_MINUTES = (10, 2)
+DEFAULT_LEAD_MINUTES = (60, 10, 2)
+"""When to read the odds, in minutes before the deadline.
+
+The 60 exists for one reason and it is not redundancy. 直前情報 is
+published well before the deadline -- measured on 2026-08-01, the live
+capture found it complete 13-29 minutes out -- so a reading at 10 or 2
+minutes is taken *after* the market has already seen it. With only those
+two, the market's reaction to the exhibition data can never be observed,
+because there is no "before" to compare against, and no amount of waiting
+fixes it: the price at that moment is simply not recorded.
+
+That is the shape of the one question this project has not been able to
+ask. Everything measured so far scores a probability against an outcome;
+whether the crowd *absorbs* new information, and how fast, needs a price
+from each side of its arrival.
+
+Adding lead times at 20/5/1 would not have helped -- all of them are also
+after publication. Position matters here, not count. 60 is chosen to sit
+safely before publication rather than tightly before it; the exact
+publication time has not been measured, and until it is, a tighter lead
+risks landing on the wrong side of the event it exists to bracket.
+
+Cost: one extra reading per race, ~150 requests a day, taking the odds
+capture from ~300 to ~450 and the whole daily total to ~600. Each request
+is still paced 3 s apart and interleaved with the 直前情報 capture.
+"""
+
 DEFAULT_TOLERANCE_MINUTES = 2
 
 

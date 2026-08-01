@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from boat_prediction.db import capture_odds, loader
+from boat_prediction.db.capture_odds import DEFAULT_LEAD_MINUTES
 from boat_prediction.db.models import Base, OddsSnapshot, Race, Venue
 from boat_prediction.odds_source import RaceOdds, WinPlaceOdds
 
@@ -398,3 +399,35 @@ class LoadOddsObservationTest(CaptureOddsTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadTimeBracketsPreviewTest(unittest.TestCase):
+    """The default lead times must bracket 直前情報 publication.
+
+    Without a reading from before the exhibition data appears, the
+    market's reaction to it cannot be measured -- and unlike a modelling
+    choice, that cannot be fixed later, because the price at that moment
+    goes unrecorded. Locking the property here rather than the numbers,
+    so a future retune cannot quietly drop it.
+    """
+
+    OBSERVED_PUBLICATION_MINUTES = 29
+    """The earliest the live capture found 直前情報 complete on 2026-08-01
+    (range 13-29 minutes before the deadline). A lead time must sit
+    further out than this to be on the other side of publication."""
+
+    def test_at_least_one_lead_precedes_preview_publication(self) -> None:
+        self.assertTrue(
+            any(lead > self.OBSERVED_PUBLICATION_MINUTES for lead in DEFAULT_LEAD_MINUTES),
+            f"no lead in {DEFAULT_LEAD_MINUTES} is before 直前情報 publication",
+        )
+
+    def test_at_least_one_lead_follows_preview_publication(self) -> None:
+        """The other side of the bracket."""
+        self.assertTrue(
+            any(lead < self.OBSERVED_PUBLICATION_MINUTES for lead in DEFAULT_LEAD_MINUTES)
+        )
+
+    def test_leads_are_distinct_and_descending_when_sorted(self) -> None:
+        self.assertEqual(len(set(DEFAULT_LEAD_MINUTES)), len(DEFAULT_LEAD_MINUTES))
+        self.assertTrue(all(lead > 0 for lead in DEFAULT_LEAD_MINUTES))
