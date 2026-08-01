@@ -1719,3 +1719,45 @@ observes. **Not decomposed** — which component carries it is untested.
 0.9214 baseline and 0.9254 for the earlier proxy. Break-even remains
 1.0000, so this is 7 points short. The 26.41% takeout still dominates
 every effect found today; this is the largest of them, not an escape.
+
+### Decomposed: 展示タイム carries it, and the components are additive
+
+Each component added to the baseline alone — not ablated from the top,
+which would confound with whatever the others absorb. Prior expectation
+was recorded before the run: 展示タイム should carry it, being the only
+*absolute* measurement of boat speed in the schema.
+
+| component | log-loss | folds won | ROI @0.00 | ROI @0.70 |
+|---|---|---|---|---|
+| **展示タイム z-score** | **+0.764%** | **26/26** | **0.9148** | 0.9237 |
+| **進入変更 flag** | +0.391% | **26/26** | 0.9114 | **0.9256** |
+| 展示ST z-score | +0.155% | 25/26 | 0.9092 | 0.9238 |
+| tilt | +0.148% | 22/26 | 0.9088 | 0.9220 |
+| full block | +1.434% | 26/26 | 0.9162 | **0.9285** |
+| baseline | — | — | 0.9075 | 0.9231 |
+
+**The expectation held**: 展示タイム is the largest single component, more
+than half the full block's gain, and it wins every fold.
+
+**The components are almost perfectly additive** — 0.764 + 0.391 + 0.155
++ 0.148 = 1.458 against the full block's 1.434. They carry nearly
+independent information, which is consistent with the other additivity
+result today (the gradient-boosted tree losing to the linear model).
+
+**進入変更 is the interesting second.** It fires on only 8.16% of boat
+rows, yet at threshold 0.70 it produces a *higher* ROI (0.9256) than
+展示タイム does (0.9237) despite half the log-loss gain. A rare signal
+that is very informative when present will do that: it matters most
+exactly where the model is being selective.
+
+**Tilt is not established.** +0.148% and only 22 of 26 folds, and at
+threshold 0.70 its ROI is *below* baseline.
+
+**Noise floor, measured rather than assumed.** The same baseline, on the
+same folds and data, returned 0.9231 in this run and 0.9214 in the
+previous one (log-loss 1.21177 vs 1.21163). So **ROI differences below
+about 0.002 are run-to-run variation** and must not be read as effects —
+which is exactly the size of the tilt result.
+
+Best figure stands at ROI **0.9285-0.9295** for the full block at
+threshold 0.70, against a break-even of 1.0000.
