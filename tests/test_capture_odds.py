@@ -72,7 +72,7 @@ class FakeOpener:
     def __init__(self) -> None:
         self.urls: list[str] = []
 
-    def Request(self, url, headers=None):  # noqa: N802 - mirrors urllib
+    def Request(self, url, headers=None):
         self.urls.append(url)
         return url
 
