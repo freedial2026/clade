@@ -1392,3 +1392,62 @@ those too, which would make **the other boats in an F-holder's race
 underpriced**. That is a positive-EV direction rather than an avoidance
 rule, and it is the first candidate of the whole session that could
 survive a payout test. Test it next.
+
+### F持ち, the tradeable version — and a correction to the entry above
+
+The entry above reported the difference-in-differences figure (lane-1
+return −0.0769) as "7.7 points of return the market does not take out".
+**That overstates what a bettor can capture, and the distinction matters
+enough to record.**
+
+The DiD compares a racer to *their own* pre-F self, so it measures the
+size of the behavioural change. Nobody can bet against that counterfactual.
+What a bettor actually faces is the market price of an F-holding lane 1,
+and F-holders are *better than average* racers to begin with (pre-F lane-1
+win rate 55.42% against the control's 51.93%), so their quality partly
+offsets their caution. Cross-sectionally, which is the tradeable
+comparison:
+
+| lane | return, lane-1 F | return, no F | diff |
+|---|---|---|---|
+| 1 | 0.8822 | 0.9019 | **−0.0198** |
+| 2 | **0.7848** | 0.7530 | **+0.0318** |
+| 3 | 0.7457 | 0.7335 | +0.0122 |
+| 4 | 0.7321 | 0.6935 | **+0.0386** |
+| 5 | 0.6162 | 0.5882 | +0.0280 |
+| 6 | 0.4027 | 0.3877 | +0.0150 |
+
+**All five outer lanes move in the pre-specified direction**, so the
+under-adjustment is real and spreads across the whole race, not just the
+inside. An F-holding lane 1 occurs in 14.1% of races (104,314), so a rule
+built on it is executable rather than theoretical.
+
+But the size is ~2-4 points, not 7.7, and the best outer lane reaches
+0.7848 against a break-even of 1.0000.
+
+### Where the session actually landed
+
+| rule | return |
+|---|---|
+| flat six lanes | 0.6603 |
+| always lane 1 | 0.8598 |
+| model, confidence ≥ 0.8 | 0.9235 |
+| avoid an F-holding lane 1 | ≈ +0.02 |
+| **break-even** | **1.0000** |
+
+**The dominant fact is the 26.41% takeout.** Every effect measured today
+moves the return by 1-8 points; the gap is 26. That is an order of
+magnitude, not a tuning problem, and it is why "the model is accurate"
+kept failing to become "the model is profitable".
+
+Three routes remain, and only these:
+
+1. **Selection on pre-deadline price** — the only untested one. Every
+   rule evaluated so far chose a *lane* and ignored its cost. The cron
+   capture began 2026-08-01.
+2. **Bet types with more market noise** (3連単 and other exotics) — more
+   combinations, coarser crowd pricing, but variance rises with it, so it
+   needs the same payout discipline rather than optimism.
+3. **直前情報** — public, but absent from the card, so the question is
+   whether the price absorbs it fully in the minutes before close, which
+   is again a price question rather than an accuracy one.
