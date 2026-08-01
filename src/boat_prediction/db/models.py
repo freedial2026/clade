@@ -692,3 +692,57 @@ class RacerPeriodCourseStats(TimestampMixin, Base):
     s2_count: Mapped[int | None] = mapped_column(Integer)
 
     period_stats: Mapped[RacerPeriodStats] = relationship(back_populates="courses")
+
+
+class RacePrediction(TimestampMixin, Base):
+    """A model's first-place probability for one lane, recorded *before*
+    the race, prospectively.
+
+    This table exists because of what the payout-settled P2 run found
+    (tasks/HANDOFF.md, 2026-08-01): the model's accuracy edge is real and
+    the market has already priced it, so the only untested route to a
+    positive return is selecting on *price*, which needs a probability
+    and a pre-deadline quote that provably existed at the same moment.
+    The odds side has been captured by cron since 2026-08-01; this is the
+    other half.
+
+    Reconstructing predictions later from stored results would not do:
+    the model would be chosen with hindsight and the record would be a
+    backtest wearing a forward test's clothes. Hence written live, and
+    hence `model_version` on every row -- a prediction whose producer is
+    unknown cannot be evaluated.
+
+    **Probabilities, not decisions.** Nothing here records "bet" or "do
+    not bet". No rule measured so far is positive-EV, so committing to
+    one would freeze a policy this project does not believe in, and every
+    later change of policy would invalidate the accumulated record.
+    Storing the inputs instead leaves the decision rule free to change
+    while the evidence keeps accruing.
+
+    `predicted_at` is when the model ran; `features_available_at` is the
+    latest `available_at` among the features it consumed. Both are kept
+    so a leakage check is a query rather than an assurance -- the pair
+    must satisfy `features_available_at <= predicted_at <=
+    races.scheduled_deadline_at`.
+    """
+
+    __tablename__ = "race_predictions"
+    __table_args__ = (
+        UniqueConstraint("race_id", "lane_number", "model_version", "predicted_at"),
+        CheckConstraint(
+            "win_probability >= 0 AND win_probability <= 1",
+            name="win_probability_is_a_probability",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    race_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("races.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    lane_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    win_probability: Mapped[float] = mapped_column(Numeric(8, 6), nullable=False)
+    predicted_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    features_available_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

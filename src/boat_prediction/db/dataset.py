@@ -91,6 +91,7 @@ justified by dataset size" gate; a recent window stays under it.
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
@@ -177,7 +178,7 @@ def feature_columns() -> list[str]:
     return columns
 
 
-_ROW_SQL = """
+_MEETING_CTE = """
 WITH meeting_window AS (
     SELECT e.race_id AS mw_race_id,
            e.lane_number AS mw_lane_number,
@@ -210,6 +211,9 @@ meeting_form AS (
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
     )
 )
+"""
+
+_FEATURE_COLUMNS = """
 SELECT r.id AS race_id,
        r.race_date,
        r.race_class,
@@ -225,22 +229,57 @@ SELECT r.id AS race_id,
        e.listed_class,
        mf.prior_starts,
        mf.prior_avg_score,
-       CASE WHEN e.available_at > r.scheduled_deadline_at THEN 1 ELSE 0 END AS too_late,
+       CASE WHEN e.available_at > r.scheduled_deadline_at THEN 1 ELSE 0 END AS too_late
+"""
+
+_TARGET_COLUMNS = """,
        (SELECT count(*) FROM race_result_entries re
          JOIN race_results res ON res.id = re.race_result_id
         WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_count,
        (SELECT min(re.lane_number) FROM race_result_entries re
          JOIN race_results res ON res.id = re.race_result_id
         WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_lane
+"""
+
+_FROM = """
   FROM races r
   JOIN race_entries e ON e.race_id = r.id
   LEFT JOIN meeting_form mf ON mf.mw_race_id = r.id AND mf.mw_lane_number = e.lane_number
+"""
+
+# Training: finished races over a date range, with the target.
+_ROW_SQL = (
+    _MEETING_CTE
+    + _FEATURE_COLUMNS
+    + _TARGET_COLUMNS
+    + _FROM
+    + """
  WHERE r.status = 'finished'
    AND r.race_date >= :start_date
    AND r.race_date <= :end_date
    AND r.scheduled_deadline_at IS NOT NULL
  ORDER BY r.race_date, r.id, e.lane_number
 """
+)
+
+# Prediction: one date's races, no target and no `status` filter, because
+# the whole point is that these races have not run. Everything else --
+# the within-meeting form window, the lane feature computation, the
+# available_at check against the deadline -- is the *same* text as
+# training, so the two cannot drift. That mattered enough to be worth the
+# refactor: a feature computed one way at fit time and another way at
+# predict time is a defect that produces no error, only wrong numbers.
+_PREDICT_SQL = (
+    _MEETING_CTE
+    + _FEATURE_COLUMNS
+    + _FROM
+    + """
+ WHERE r.race_date = :race_date
+   AND r.scheduled_deadline_at IS NOT NULL
+   AND r.status <> 'cancelled'
+ ORDER BY r.id, e.lane_number
+"""
+)
 
 
 def _lane_features(row) -> list[float] | None:
@@ -363,4 +402,106 @@ def build_dataset(
 
     return Dataset(
         X=X, y=y, dates=dates, phases=phases, feature_names=feature_columns(), stats=stats
+    )
+
+
+@dataclass
+class PredictionStats:
+    races_considered: int = 0
+    races_used: int = 0
+    dropped_not_six_lanes: int = 0
+    dropped_missing_feature: int = 0
+    dropped_late_feature: int = 0
+
+    def __str__(self) -> str:
+        return (
+            f"races_considered={self.races_considered} races_used={self.races_used} "
+            f"dropped_not_six_lanes={self.dropped_not_six_lanes} "
+            f"dropped_missing_feature={self.dropped_missing_feature} "
+            f"dropped_late_feature={self.dropped_late_feature}"
+        )
+
+
+@dataclass
+class PredictionRows:
+    race_ids: list
+    X: list[list[float]]
+    feature_names: list[str]
+    stats: PredictionStats
+
+    def __len__(self) -> int:
+        return len(self.race_ids)
+
+
+def build_prediction_rows(session: Session, *, race_date: dt.date) -> PredictionRows:
+    """Feature rows for one date's races, for races that have not run.
+
+    Same features, same within-meeting window and same `available_at`
+    check as `build_dataset` -- they are built from the same SQL text, so
+    a feature cannot be computed one way at fit time and another at
+    predict time.
+
+    Today's own earlier races contribute nothing to within-meeting form
+    even though they appear in the window: they have no result rows yet,
+    so their score is NULL and both `COUNT(score)` and `AVG(score)`
+    ignore them. That is the same conservative bound
+    `loader.results_available_at` sets, arrived at without a special case.
+    """
+    stats = PredictionStats()
+    race_ids: list = []
+    X: list[list[float]] = []
+
+    current_race = None
+    lanes: dict[int, list[float] | None] = {}
+    seeded = False
+    too_late = False
+
+    def flush() -> None:
+        nonlocal lanes, too_late
+        if current_race is None:
+            return
+        stats.races_considered += 1
+        if set(lanes) != set(LANES):
+            stats.dropped_not_six_lanes += 1
+        elif too_late:
+            stats.dropped_late_feature += 1
+        elif any(lanes[lane] is None for lane in LANES):
+            stats.dropped_missing_feature += 1
+        else:
+            row: list[float] = []
+            for lane in LANES:
+                row.extend(lanes[lane])
+            row.append(1.0 if seeded else 0.0)
+            X.append(row)
+            race_ids.append(current_race)
+            stats.races_used += 1
+        lanes = {}
+        too_late = False
+
+    meeting_window_start = race_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
+    for row in session.execute(
+        text(_PREDICT_SQL),
+        {
+            "race_date": race_date,
+            "end_date": race_date,
+            "meeting_window_start": meeting_window_start,
+        },
+    ):
+        # SQLite returns the UUID as hex text through raw SQL where
+        # PostgreSQL returns a uuid object; these ids are written back as a
+        # foreign key, so they have to be the real type -- and the
+        # conversion has to happen before the comparison below, or every
+        # row looks like a new race.
+        race_id = uuid.UUID(row.race_id) if isinstance(row.race_id, str) else row.race_id
+        if race_id != current_race:
+            flush()
+            current_race = race_id
+            seeded = is_standing_seeded(row.race_class)
+        if row.too_late:
+            too_late = True
+        lanes[int(row.lane_number)] = _lane_features(row)
+    flush()
+
+    return PredictionRows(
+        race_ids=race_ids, X=X, feature_names=feature_columns(), stats=stats
     )
