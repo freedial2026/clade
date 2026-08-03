@@ -223,6 +223,11 @@ class Dataset:
     phases: list[str]
     feature_names: list[str]
     stats: DatasetStats
+    race_ids: list = field(default_factory=list)
+    """Row-aligned with `X`. Carried so an evaluation can settle a
+    prediction at that race's real payout, or join it to the market --
+    neither of which is possible from `(X, y, dates)` alone, which is why
+    every ROI figure before `evaluate_p2` came from a throwaway script."""
 
     def __len__(self) -> int:
         return len(self.y)
@@ -526,6 +531,7 @@ def build_dataset(
     y: list[int] = []
     dates: list[dt.date] = []
     phases: list[str] = []
+    race_ids: list = []
 
     current_race = None
     lanes: dict[int, list[float] | None] = {}
@@ -564,6 +570,7 @@ def build_dataset(
             y.append(int(winner_lane))
             dates.append(race_date)
             phases.append(race_phase)
+            race_ids.append(current_race)
             stats.races_used += 1
         lanes = {}
         before_info = {}
@@ -609,6 +616,7 @@ def build_dataset(
         phases=phases,
         feature_names=feature_columns(include_before_info=include_before_info),
         stats=stats,
+        race_ids=race_ids,
     )
 
 
