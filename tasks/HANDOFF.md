@@ -2432,3 +2432,168 @@ Does **not** say there is a profitable strategy:
 The forward capture is the test, and it is now collecting everything it
 needs: pre-deadline odds at 60/10/2 minutes, the 直前情報 model's
 probabilities, and since today the 2連単/2連複 pool.
+
+## 未使用テーブルの棚卸しと、選手の数値化 (2026-08-03)
+
+### どのテーブルがモデルに届いているか
+
+Features reach a model through exactly one path -- `dataset.py`'s SQL --
+so "is this table used" has a precise answer. It reads `races`,
+`race_entries`, `race_results`, `race_result_entries`,
+`before_info_entries`. `evaluate_p2` additionally reads `odds_snapshots`
+and `race_payouts` for settlement. That is all.
+
+**Stored, populated, and never read by any model:**
+
+| テーブル | 行数 | 未使用の理由 |
+|---|---|---|
+| `racer_period_course_stats` | 241,224 | コースで鍵付け、進入を観測する手段が無かった |
+| `racer_period_stats` | 40,204 | 同上（親） |
+| `race_surface_conditions` | 182,722 | 直前情報ブロックから意図的に除外 |
+| `weather_observations` | 189,096 | 陸上最寄り局の日別平均、会場適性に効果ゼロと既測 |
+| `race_results.winning_method` | 1,152,001 | バックフィル済み、用途未定 |
+| `exhibition_entries` | 7,628 | **ロード順バグ**で698万エントリ中7,628行のみ |
+
+`exhibition_entries` is worth a note it has not had: its data is
+results-time so it can never describe *this* race, but a feature about
+*past* races is available at prediction time. Fixing the loader would
+extend 展示タイム back to 2005 -- the only route past
+`before_info_entries`' 2023-05 start.
+
+### 選手のコース別能力は実在し、番組表には無い
+
+`(racer, period, course)` holds a **mean of 16.8 starts, median 17**;
+only 4.6% of rows have 30 or more. At course 1's 46.8% base that is a
+~12 pt standard error, at course 6's 2.0% about 3.4 pt. The published
+per-course rate is therefore mostly noise, and shrinkage is not
+optional.
+
+Empirical-Bayes constants, by the beta-binomial method of moments:
+
+| course | 基準勝率 | k（縮約） | 信号割合 |
+|---|---|---|---|
+| 1 | 53.43% | 7.7 | 68.0% |
+| 2 | 14.82% | 27.0 | 39.8% |
+| 3 | 12.77% | 28.0 | 38.8% |
+| 4 | 11.27% | 31.0 | 35.9% |
+| 5 | 6.05% | 45.6 | 27.4% |
+| 6 | 2.03% | 48.0 | 26.2% |
+
+**Shrinkage barely moves a correlation** (one period → next: raw 0.6760
+vs shrunk 0.6717 at course 1; it only wins at courses 5-6, +0.0199 at
+course 6). That is expected -- correlation is scale-free and the start
+counts cluster tightly around 17, so shrinkage is nearly affine here. It
+is still required for the *level*: an unshrunk 0/5 hands a probability
+model a literal zero.
+
+**The finding that matters.** Regressing the shrunk per-course rate on
+the racer's own 全国勝率 and testing whether the *residual* persists to
+the next period:
+
+| course | 全国勝率のみ r | コース残差の持続 r |
+|---|---|---|
+| 1 | 0.7004 | **0.3072** |
+| 2 | 0.5246 | 0.1493 |
+| 3 | 0.5157 | 0.1479 |
+| 4 | 0.4319 | 0.2031 |
+| 5 | 0.3930 | 0.1450 |
+| 6 | 0.2779 | 0.1648 |
+
+n ≈ 34,000 per course. **Per-course ability survives removing overall
+skill, at 0.15-0.31.** "イン屋" is a real and measurable thing, and the
+B-file's 全国勝率 does not encode it. Whether the market has it priced
+is a separate question -- the fan file is public -- and untested.
+
+## レース単位の集計値：合計・平均は効かない、配置が効く (2026-08-03)
+
+634,942 races, 2015 onward, six-lane finished races, favourite = 2連単
+`popularity_rank = 1`.
+
+**枠番の合計は6艇カードでは常に21、平均は常に3.5** -- no information, so
+the lane axis was replaced with `inside_edge` = lane 1's 全国勝率 minus
+the mean of the other five. 選手勝率の合計 and 平均 differ only by a
+factor of 6 and are reported as the sum.
+
+| 指標 | 分位 | 的中率 | 回収率 |
+|---|---|---|---|
+| 選手勝率の合計 | 低/中/高 | 23.91 / 22.58 / 24.82% | 0.7532 / 0.7383 / 0.7540 |
+| モーター2連率の合計 | 低/中/高 | 23.96 / 23.62 / 23.72% | 0.7494 / 0.7457 / 0.7504 |
+| レース内の選手sd | 小/中/大 | 23.01 / 23.45 / 24.85% | 0.7400 / 0.7442 / 0.7613 |
+| **1号艇の相対的強さ** | 低/中/高 | **17.21 / 23.78 / 30.31%** | 0.7135 / 0.7566 / 0.7754 |
+
+**Field level is inert.** The racer sum is *non-monotone* (the middle
+tercile is the worst) and the motor sum spans 0.34 pt of hit rate --
+consistent with the 2.4 pt motor-tercile effect already measured. Six
+boats all getting better changes nothing about which one wins; it is the
+zero-sum structure showing through.
+
+**Placement is not.** Whether the strong racer sits inside moves the hit
+rate 13 points, an order of magnitude more than every level metric
+combined. But the return moves only 6.2 points and every cell stays far
+under 1.0.
+
+節日 reproduces (22.20% → 27.05% over 第1日..第7日; 初日 0.7243 / 中日
+0.7511 / 最終日 0.7636). Crossed with `inside_edge` the two are
+independent -- the 17/24/30% ordering holds inside every day group and
+the day gradient holds inside every tercile. Best cell 最終日 ×
+inside-high: 0.7807 ±0.0117 over 43,615 races.
+
+## 上位選手は、拮抗した相手と組むと割高になる (2026-08-03)
+
+Asked whether a top racer paired with weak opponents differs from one
+paired with equals. 634,921 races; the top racer is the highest 全国勝率
+on the card, backed at 単勝 and settled at the real payout (only the
+winner's payout is needed, so the whole archive is usable).
+
+Uncontrolled, by the gap between the top racer and the mean of the other
+five (+0.93 / +1.59 / +2.43): 28.22 / 33.82 / 41.49% win, ROI 0.7652 /
+0.8053 / **0.8353**.
+
+**Controlled for the top racer's lane -- monotone in all six:**
+
+| トップの枠 | 実力差小 | 実力差中 | 実力差大 |
+|---|---|---|---|
+| 1 | 68.39% / 0.9022 | 72.02% / 0.9133 | 77.20% / **0.9186** |
+| 2 | 20.67% / 0.7744 | 29.73% / 0.8214 | 39.75% / 0.8288 |
+| 3 | 17.98% / 0.7876 | 25.18% / 0.7922 | 34.32% / 0.8233 |
+| 4 | 14.80% / 0.7561 | 21.18% / 0.7919 | 30.30% / 0.8198 |
+| 5 | 9.41% / 0.7290 | 14.34% / 0.7816 | 21.99% / 0.8134 |
+| 6 | 5.33% / **0.5037** | 9.58% / 0.6357 | 17.39% / 0.7420 |
+
+The effect's *size* depends entirely on the lane: +1.6 points of return
+for a lane-1 top racer, **+23.8 for a lane-6 one**. A strong racer on the
+outside against weak opposition is the worst cell measured anywhere in
+this project (0.5037) -- the market does not discount them nearly enough
+for a 5.33% win rate.
+
+By A1 count -- how many equals the top racer faces:
+
+| A1人数 | n | トップ勝率 | 回収率 |
+|---|---|---|---|
+| 0 | 138,950 | 33.27% | **0.8432** |
+| 1 | 272,391 | 37.21% | 0.7997 |
+| 3 | 35,601 | 35.13% | 0.7904 |
+| 6 | 39,648 | 24.22% | **0.6723** |
+
+**An all-A1 race is the worst composition to back the top racer in.**
+Restricted to a lane-1 top racer the same direction holds (A1 0-1:
+0.9120, A1 2-3: 0.9189, A1 4+: 0.8849).
+
+### なぜこれが今までと違うのか
+
+**This is the first exception to "the hit rate moves and the return does
+not."** Venue, race number, series day, and every field-level aggregate
+moved the hit rate while leaving the return flat -- the signature of a
+correctly-priced market. The strength *gap* moves both, monotonically,
+in all six lanes.
+
+Read the direction carefully, though: the usable information is on the
+**avoid** side, not the back side. The best cell is 0.9186 and still 8
+points short of break-even, while 0.5037 and 0.6723 are far *below* the
+0.75 market average. And the counter-intuitive part is the one to keep:
+a top racer among equals is worse value than one among weaker
+opponents, because their win rate falls to 24% while the price does not
+widen to match.
+
+All of this is computed from the card, which is public, so it is not
+private information -- it is a pricing error the crowd leaves in place.

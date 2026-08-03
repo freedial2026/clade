@@ -797,10 +797,23 @@ tasks/HANDOFF.md for the evidence behind each line.
    data are **deployed and loaded on .21** (2026-08-01): migration
    `aa3047500d13`, 40,204 period rows / 241,224 course rows over 25
    periods, `available_at` 2014-07-01 .. 2026-07-01. **Nothing reads them
-   yet.** Joining on lane is an approximation until item 1 lands. Also
-   outstanding: a proper `db/load_fan_archive.py` CLI — the load was run
-   from a one-off script, which is fine for 25 idempotent files but not
-   for the twice-yearly refresh.
+   yet**, and `dataset.py` is the only path into a model, so that is
+   literal. The lane-vs-course approximation is no longer needed: item 1
+   landed, so 直前情報's start-exhibition course gives the actual 進入.
+
+   **Now has measured justification (2026-08-03).** Per-course ability
+   survives removing the racer's own 全国勝率 — the residual persists at
+   r = 0.31 (course 1) down to 0.15, n ≈ 34,000 per course. So the card
+   does not already encode it. Design settled by the same measurement:
+   (racer, period, course) averages **16.8 starts**, so empirical-Bayes
+   shrinkage is mandatory, with k = 7.7 / 27.0 / 28.0 / 31.0 / 45.6 /
+   48.0 by course (signal share 68.0% → 26.2%). Build the feature as
+   shrunk level **plus** the residual-after-overall-skill, which is the
+   part that is actually new.
+
+   Also outstanding: a proper `db/load_fan_archive.py` CLI — the load was
+   run from a one-off script, which is fine for 25 idempotent files but
+   not for the twice-yearly refresh.
 4. **`db/evaluate_p2.py` + `Dataset.race_ids`** — promote the throwaway
    payout-settled evaluation into the repo. Log-loss and ROI were shown
    to disagree, so both belong in the standard runner.
@@ -842,6 +855,35 @@ the other five in those races return the market average (0.7871
 ±0.1104). Also refuted the same day: that the inside-lane mispricing is
 explained by the lane-1 racer's *grade* — stratified by grade gap, lane
 1's return is flat at 0.906–0.925.
+
+**Also closed 2026-08-03**: per-race *level* aggregates. The sum (=mean
+×6) of 全国勝率 across the card is non-monotone in the favourite's hit
+rate (23.91 / 22.58 / 24.82% by tercile) and the sum of モーター2連率
+spans 0.34 points — both inert, which is the zero-sum structure showing
+through: six boats all improving changes nothing about which wins. And
+枠番の合計/平均 is *arithmetically* constant on a six-lane card (21 and
+3.5), so it can never carry information. What does move the hit rate is
+placement, not level — whether the strong racer sits inside spans
+17.21%→30.31% — but the return still only spans 0.7135→0.7754.
+634,942 races, 2015 onward.
+
+**New lead, 2026-08-03 — the first exception to "the hit rate moves and
+the return does not."** Backing the top-rated racer, the *gap* between
+them and the rest moves both, monotonically, **in all six lanes**:
+lane 1 goes 0.9022→0.9186 across gap terciles, lane 6 goes
+0.5037→**0.7420** (+23.8 points). By A1 count, an all-A1 race is the
+worst composition to back the top racer in (0.6723, win rate down to
+24.22%) and an all-B race the best (0.8432). 634,921 races, settled at
+real 単勝 payouts.
+
+The usable direction is **avoid**, not back: the best cell is 0.9186 and
+still 8 points short, while 0.5037 and 0.6723 sit far below the ~0.75
+market average. Counter-intuitive part worth keeping: a top racer among
+equals is worse value than one among weaker opponents, because the win
+rate collapses faster than the price widens. Computed entirely from the
+public card, so this is a pricing error rather than private information
+— which also means it needs the same forward confirmation as everything
+else before it means anything.
 
 Before any real use: confirm the P2 forward test on genuinely
 pre-deadline prices, then seek separate approval for any promotion beyond
