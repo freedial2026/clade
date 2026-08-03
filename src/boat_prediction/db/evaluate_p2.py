@@ -207,6 +207,7 @@ def evaluate_p2(
     thresholds: tuple[float, ...] = DEFAULT_THRESHOLDS,
     ev_thresholds: tuple[float, ...] = DEFAULT_EV_THRESHOLDS,
     include_before_info: bool = False,
+    include_racer_stats: bool = False,
 ) -> EvaluationP2Result:
     if train_end >= test_start:
         raise ValueError(
@@ -219,6 +220,7 @@ def evaluate_p2(
         start_date=train_start,
         end_date=train_end,
         include_before_info=include_before_info,
+        include_racer_stats=include_racer_stats,
     )
     if not len(train):
         raise ValueError(f"no usable training races between {train_start} and {train_end}")
@@ -231,6 +233,7 @@ def evaluate_p2(
         start_date=test_start,
         end_date=test_end,
         include_before_info=include_before_info,
+        include_racer_stats=include_racer_stats,
     )
     result = EvaluationP2Result(train_races=len(train), test_races=len(test))
     if not len(test):
@@ -291,6 +294,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-start", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--test-end", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--with-before-info", action="store_true")
+    parser.add_argument("--with-racer-stats", action="store_true")
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -303,6 +307,7 @@ def _main(argv: list[str] | None = None) -> int:
                 test_start=args.test_start,
                 test_end=args.test_end,
                 include_before_info=args.with_before_info,
+                include_racer_stats=args.with_racer_stats,
             )
     finally:
         engine.dispose()
