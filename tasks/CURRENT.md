@@ -659,13 +659,18 @@ tasks/HANDOFF.md for the evidence behind each line.
    Every rule evaluated so far picked a *lane* and ignored what it cost.
    Both halves of the evidence are now accumulating: pre-deadline odds
    since 2026-08-01, and the 直前情報 model's probabilities since
-   2026-08-03. It now has a **specific hypothesis to test** rather than
-   an open search (2026-08-03): backing 1号艇 *when the market does not
-   make it favourite* returned 1.1072 [1.0338, 1.1807] over 2,688 races,
-   and by 1号艇's own odds band the gradient is monotone up to 1.3979
-   above 5x. Small window, post-hoc cut, closing prices — a hypothesis,
-   not a result. It is the only thing measured anywhere in this project
-   that cleared 1.0000.
+   2026-08-03, and the **2連単/2連複 pool** since 2026-08-03 14:16.
+   It now has a **specific hypothesis to test** rather than an open
+   search: above about 3x, 1号艇 wins *more* than its price implies
+   (5-10x: 21.33% realised against 15.59% implied, return 1.3741 over
+   483 bets) while every other lane wins less at the same price — the
+   opposite of the favourite-longshot bias. The market seems to apply
+   too small an inside-lane premium at long prices. Survives a control
+   for the lane-1 racer's grade; does **not** reduce to grade, which was
+   the original guess and is refuted. 80 days, post-hoc odds cut,
+   closing prices, and no out-of-sample data exists — the forward
+   capture is the only available test. Still the only thing measured
+   anywhere in this project that cleared 1.0000.
 3. **Wire the per-course stats into the dataset** — tables, loader and
    data are **deployed and loaded on .21** (2026-08-01): migration
    `aa3047500d13`, 40,204 period rows / 241,224 course rows over 25
@@ -704,6 +709,17 @@ return does not follow** — the venue correlation is +0.39 at n=24, under
 the 0.404 threshold. Stacking the best conditions (安定水面 × 節4日目以降
 × 徳山/大村/蒲郡) reaches 0.8173 and no further. Look on the unpopular
 side instead; see item 2.
+
+**Also closed 2026-08-03**: the odds *overround*. Σ(1/odds) ranges
+1.04–1.43 around a mean of 1.3589, but the spread is the **1.00 odds
+floor** binding on extreme favourites, not 0.1 quantisation — every
+low-overround race has a boat quoted at exactly 1.00. Not actionable:
+a 1.00 quote pays the stake back, so backing it returns its win rate
+(0.7223 over 1,329 bets) and cannot exceed 1.0 by construction, while
+the other five in those races return the market average (0.7871
+±0.1104). Also refuted the same day: that the inside-lane mispricing is
+explained by the lane-1 racer's *grade* — stratified by grade gap, lane
+1's return is flat at 0.906–0.925.
 
 Before any real use: confirm the P2 forward test on genuinely
 pre-deadline prices, then seek separate approval for any promotion beyond

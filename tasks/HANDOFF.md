@@ -2194,3 +2194,139 @@ probabilities since 2026-08-03.
 "単勝's lane 1 at 0.86" quoted in the exotics section above does not
 reproduce at that definition. The discrepancy was not chased down;
 whoever revisits it should re-derive the 0.86 rather than trust it.
+
+## 内枠のミスプライスは「格」ではなく「価格」の次元にある (2026-08-03)
+
+Three items were run in the order asked: capture the second pool first,
+then the two measurements that existing data could already answer.
+
+### 3. 2連単/2連複 を捕捉開始（デプロイ済み）
+
+`odds2tf` renders both pools on one page, so 2連複 is free. The grid is
+read *by column* -- the header carries the six first-place boats and each
+body row holds six `(second boat, odds)` pairs -- and the first lane is
+taken from the header rather than assumed to be `column + 1`, because a
+欠場 would otherwise shift every price onto the wrong boat with nothing
+downstream able to notice.
+
+Both pages for a race share **one** `observed_at`, read before either
+fetch. Two stamps 3 s apart would leave every cross-pool comparison with
+a 3 s window for the market to move in, which is exactly the quantity
+being measured.
+
+Live on .21 from 2026-08-03 14:16 JST; first race captured 30 exacta and
+15 quinella rows at a single stamp. Volume goes from ~450 requests a day
+to ~900, about 1.3 a minute averaged over the racing window. (The
+proposal said "+150/day", which was wrong by 3x -- it is +450, three lead
+times times ~150 races. The "double the current" characterisation was
+right.)
+
+### 1. 仮説は否定された
+
+The proposed mechanism was: the crowd over-discounts the inside lane's
+*positional* advantage when the lane-1 racer is visibly weak. The
+descriptive evidence looked strong -- lane 1 goes unpopular almost
+entirely on its own grade (級別 3.162 → 2.186, 勝率 5.958 → 4.637) while
+the opposition barely changes (5.246 → 5.145, marginally *weaker*).
+
+**It does not survive.** Stratified by `grade_gap` (lane 1's 全国勝率
+minus the mean of the other five), lane 1's return is flat:
+
+| 格差 | n | 市場の確率 | 実際の勝率 | 回収率 |
+|---|---|---|---|---|
+| < −1.5 | 506 | 20.63% | 21.15% | 0.9079 |
+| −1.5..0 | 3,379 | 35.01% | 39.83% | 0.9201 |
+| 0..1.5 | 5,338 | 50.66% | 59.44% | 0.9055 |
+| ≥ 1.5 | 1,826 | 60.97% | 74.70% | 0.9247 |
+
+The rising 乖離 in percentage points (0.5 → 13.7) is a base-rate
+artifact, not a widening error: 13.7 pt on a 61% base is a *smaller*
+relative mistake than 4.8 pt on 35%, and the return column -- which is
+what a bettor collects -- does not move.
+
+### The pattern is in the price dimension, and it is sharper
+
+Cross-tabulating by odds band and lane instead:
+
+| オッズ帯 | | n | 勝率 | 理論勝率 | 回収率 |
+|---|---|---|---|---|---|
+| ~3 | 1号艇 | 10,044 | 59.22% | 64.09% | 0.8619 |
+| ~3 | 2-6号艇 | 5,383 | 29.65% | 46.77% | 0.6057 |
+| 3-5 | **1号艇** | 1,279 | **28.85%** | 26.93% | **1.0606** |
+| 3-5 | 2-6号艇 | 7,973 | 17.40% | 25.25% | 0.6689 |
+| 5-10 | **1号艇** | 483 | **21.33%** | 15.59% | **1.3741** |
+| 5-10 | 2-6号艇 | 16,607 | 9.30% | 13.79% | 0.6453 |
+| 10~ | 1号艇 | 78 | 11.54% | 6.61% | 1.5449 |
+| 10~ | 2-6号艇 | 28,583 | 3.26% | 3.54% | 0.6251 |
+
+**Above about 3x, lane 1 wins more often than its price implies while
+every other boat wins less.** At 5-10x the implied rate is 15.59% and the
+realised one is 21.33%; for the other five lanes at the same price it is
+13.79% implied against 9.30% realised. So this is not the
+favourite-longshot bias -- lane 1 runs *opposite* to the field.
+
+The reading: the market applies too small an inside-lane premium at long
+prices. It prices a dear lane 1 like an ordinary longshot, and it is not
+one.
+
+The gradient survives the grade control, which is what says the two
+dimensions are not the same variable in disguise:
+
+| 1号艇の格 | ~2 | 2-3 | 3-5 | 5~ |
+|---|---|---|---|---|
+| 格下 | 0.7347 | 0.8730 | 1.0012 | 1.3317 |
+| 格上 | 0.8630 | 1.0445 | 1.2715 | 1.9610 |
+
+**Read the size honestly.** 80 days, and the odds-band cut was chosen
+after seeing the data. n collapses along the gradient: 3-5x is 1,279
+bets (CI [0.968, 1.153], includes 1.0), 5-10x is 483 (CI [1.132, 1.616],
+excludes it), 10x+ is 78 with a ±1.12 interval and carries no
+information. The 格上 × 5x~ cell is 59 bets.
+
+**There is no out-of-sample test available in existing data.** 単勝 odds
+exist for these 80 days and nowhere else; the 21-year archive has
+payouts, which give the winner's odds only. The forward capture is the
+test, which is the same conclusion the price-selection item already had.
+
+### 4. オーバーラウンドの幅は丸めではなく下限1.00で、利用できない
+
+Σ(1/odds) averages 1.3589 (26.41% implied takeout, matching the known
+figure) but ranges 1.0403-1.4293. The spread is **not** generic 0.1
+quantisation:
+
+| Σ(1/odds) | レース数 | 含意控除率 | 最短オッズ平均 | 最長オッズ平均 |
+|---|---|---|---|---|
+| <1.32 | 452 | 20.10% | **1.00** | 96.81 |
+| ≥1.32 | 10,598 | ~26.4% | 1.58 | 39.08 |
+
+Every low-overround race contains a boat quoted at the **1.00 floor**.
+A pari-mutuel would price a 90%-probability boat at 0.736/0.90 = 0.82;
+the floor lifts it to 1.00, which removes about 0.22 from the race's
+implied total. That is the whole of the effect.
+
+It is not actionable, and the reason is structural rather than
+statistical:
+
+| 戦略 | 舟券数 | 勝率 | 回収率 |
+|---|---|---|---|
+| 下限1.00の本命を買う | 1,329 | 72.23% | **0.7223** |
+| 同レースの残り5艇を一律に買う | 6,645 | 5.55% | 0.7871 ±0.1104 |
+
+A 1.00 quote pays the stake back, so the best possible outcome is a
+return of exactly 1.0 and the expected return **is** the win rate --
+below 1 by construction, whatever the takeout says. The other five in
+those races return the market average. The earlier 0.9544 figure was
+flat-betting all six and was carried by rare hits at up to 150x; it does
+not survive splitting.
+
+Noted in passing: `race_payouts` 単勝 has a minimum payout of **70 yen**,
+not 100, so a winning ticket can still return 0.7. 104,773 rows pay
+exactly 100 (元返し). Neither was chased down.
+
+### 差し引き
+
+Item 4 is closed. Item 1's stated mechanism is refuted but left a
+sharper and better-supported pattern in its place, and one that the
+already-running capture is positioned to test forward. Item 2 (odds
+movement, and the market's reaction to 直前情報 across the 60-minute
+bracket) waits on accumulation, as planned.
