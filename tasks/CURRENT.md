@@ -657,8 +657,15 @@ tasks/HANDOFF.md for the evidence behind each line.
    ~12,000 pages, then daily incremental).
 2. **Selection on price** — the only untested mechanism for positive ROI.
    Every rule evaluated so far picked a *lane* and ignored what it cost.
-   The 2-minute cron has been accumulating pre-deadline odds since
-   2026-08-01; nothing to do but let it run and build the evaluation.
+   Both halves of the evidence are now accumulating: pre-deadline odds
+   since 2026-08-01, and the 直前情報 model's probabilities since
+   2026-08-03. It now has a **specific hypothesis to test** rather than
+   an open search (2026-08-03): backing 1号艇 *when the market does not
+   make it favourite* returned 1.1072 [1.0338, 1.1807] over 2,688 races,
+   and by 1号艇's own odds band the gradient is monotone up to 1.3979
+   above 5x. Small window, post-hoc cut, closing prices — a hypothesis,
+   not a result. It is the only thing measured anywhere in this project
+   that cleared 1.0000.
 3. **Wire the per-course stats into the dataset** — tables, loader and
    data are **deployed and loaded on .21** (2026-08-01): migration
    `aa3047500d13`, 40,204 period rows / 241,224 course rows over 25
@@ -685,6 +692,18 @@ the time against ~47%); tree ensembles / automatic interaction search
 (HistGBT lost to the linear model on both log-loss and ROI); 調整力 as a
 research theme (persistence 0.14, sd 0.013); 相性 (real but ~±3.7pp, and
 finals are the worst place to estimate it, not the best).
+
+**Closed 2026-08-03**: backing the favourite, and searching for
+conditions under which it holds. Its return is 0.71–0.79 in *every* bet
+type (ワイド worst at 0.7115 despite the highest hit rate, 52.68%), and
+the shortfall against break-even is 24–29% across all five — the takeout,
+not a solvable gap. Venue, race number, 節日 and water conditions all
+move the 人気通り率 substantially (会場 spans 8.81 pt; 第N日 rises
+monotonically 20.31%→25.18%, which does match the 機力 story) **while the
+return does not follow** — the venue correlation is +0.39 at n=24, under
+the 0.404 threshold. Stacking the best conditions (安定水面 × 節4日目以降
+× 徳山/大村/蒲郡) reaches 0.8173 and no further. Look on the unpopular
+side instead; see item 2.
 
 Before any real use: confirm the P2 forward test on genuinely
 pre-deadline prices, then seek separate approval for any promotion beyond

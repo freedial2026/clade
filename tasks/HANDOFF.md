@@ -2020,3 +2020,177 @@ the block is worth forward is a query away rather than another experiment.
 Still true, and unchanged by any of this: the best ROI measured anywhere
 is 0.9295 against a break-even of 1.0000, and the 26.41% takeout
 dominates every effect found so far.
+
+## 1番人気は式別を問わず 0.71-0.79。歪みは人気の逆側にあった (2026-08-03)
+
+Question asked directly: for the lowest-odds ticket in each bet type,
+how often does it win and what does it pay? Measured rather than
+reasoned about, because the follow-up question -- "if it averaged 2x and
+hit over 50%, that would profit" -- is arithmetically correct and the
+only way to answer it is with the actual pair of numbers.
+
+### 1番人気の的中率と払戻倍率
+
+`race_payouts.popularity_rank` covers 連単/連複/拡連複 across the whole
+archive; it is **NULL for 単勝 and 複勝 in every one of the 1.15 M rows**,
+so those two come from `odds_snapshots` closing prices and cover only the
+80-day window (11,050 races, 2025-07-29..10-17).
+
+| 式別 | レース数 | 的中率 | 平均倍率 | 中央 | 最高 | 回収率 |
+|---|---|---|---|---|---|---|
+| ３連単 | 1,151,431 | 9.30% | 7.95 | 7.20 | 41.6 | 0.7394 |
+| ２連単 | 1,152,282 | 21.73% | 3.43 | 3.10 | 15.1 | 0.7457 |
+| ３連複 | 1,150,243 | 25.03% | 3.03 | 2.90 | 10.2 | 0.7588 |
+| ２連複 | 1,151,890 | 31.15% | 2.44 | 2.30 | 8.5 | 0.7586 |
+| 拡連複 | 1,150,329 | 52.68% | 1.35 | 1.30 | 6.7 | **0.7115** |
+| 単勝 | 11,050 | 54.50% | 1.44 | 1.30 | — | **0.7868** |
+| 複勝 | 11,087 | 70.67% | 1.11 | 1.00 | — | 0.7842 |
+
+Re-running the 連単/連複 rows restricted to the same 80-day window moved
+the hit rates by only +0.6 to +1.8 pt, so that window is not peculiar and
+the 単勝 figure can be read alongside the archive ones.
+
+複勝 carries a caveat: 2,151 of 11,087 races have several boats tied at
+the lowest 複勝 odds (the quote is coarse, 1.0-1.1), and the tie was
+broken by lane number, which biases the pick toward lane 1. Read it as
+roughly "lane 1's top-two rate". 単勝 has only 173 such ties.
+
+**ワイドが最も悪い (0.7115) にもかかわらず的中率は最高 (52.68%)**, which is
+the cleanest single demonstration available that 当たりやすさ and 儲かるか
+are unrelated quantities.
+
+### なぜ「2倍で50%超」が存在しないのか
+
+損益分岐に必要な的中率は `1 / 平均倍率`. Every bet type falls short of it
+by almost exactly the same fraction:
+
+| 式別 | 必要的中率 | 実際 | 不足 |
+|---|---|---|---|
+| ３連単 | 12.58% | 9.30% | −26% |
+| ２連単 | 29.13% | 21.73% | −25% |
+| ３連複 | 32.99% | 25.03% | −24% |
+| ２連複 | 41.06% | 31.15% | −24% |
+| 拡連複 | 74.03% | 52.68% | −29% |
+
+Directly, from the 80-day 単勝 odds over all six boats (not just the
+favourite) -- the table that answers the question as asked:
+
+| オッズ帯 | 平均オッズ | 理論勝率 1/odds | 実際の勝率 | 回収率 |
+|---|---|---|---|---|
+| 〜1.5 | 1.18 | 84.47% | 66.09% | 0.7740 |
+| 1.5-2.0 | 1.69 | 59.33% | 47.24% | **0.7860** |
+| 2.0-3.0 | 2.43 | 41.14% | **31.85%** | 0.7612 |
+| 3.0-5.0 | 3.93 | 25.47% | 18.98% | 0.7231 |
+| 5-10 | 7.23 | 13.84% | 9.64% | 0.6659 |
+| 10-20 | 14.07 | 7.11% | 4.49% | 0.5981 |
+| 20〜 | 44.98 | 2.22% | 1.85% | 0.6625 |
+
+**A 2x ticket wins about 32%, not 50%.** The odds are the crowd's
+probability estimate, and the realised rate sits below the implied one in
+every band -- by 22% at the short end and 37% at 10-20x, the familiar
+favourite-longshot shape.
+
+### 会場・R・節日で「人気通り」率は動く。回収率は動かない
+
+Asked specifically to hold weather constant and look for venues or
+positions in the series where the favourite simply holds, on the theory
+that机力 (motor) would dominate there.
+
+**会場** (2連単1番人気, full archive): 人気通り率 spans 8.81 pt, 大村
+26.25% down to 平和島 17.44%. 回収率 spans only 7.2 pt (0.7037 鳴門 ..
+0.7756 蒲郡) and **does not follow it** -- 戸田 is second-worst on hit
+rate (17.68%) yet returns 0.7604, above 大村's 0.7625 peer group. The
+correlation across the 24 venues is **+0.3932**, just under the n=24
+significance threshold of 0.404.
+
+**レース番号**: R12 25.35% vs R3 18.28% (7 pt), 回収率 flat at
+0.723-0.763.
+
+**節の第N日** -- the one that matches the hypothesis:
+
+| 第N日 | レース数 | 人気通り% | 回収率 |
+|---|---|---|---|
+| 1 | 211,656 | 20.31 | 0.7275 |
+| 2 | 211,749 | 21.44 | 0.7513 |
+| 3 | 211,640 | 21.29 | 0.7454 |
+| 4 | 211,119 | 22.11 | 0.7431 |
+| 5 | 172,510 | 22.92 | 0.7513 |
+| 6 | 126,736 | 22.83 | 0.7625 |
+| 7 | 6,949 | 25.18 | 0.7707 |
+
+**Monotone, and the return moves with it** -- 0.7275 to 0.7625 is 3.5 pt
+against a ±0.7 pt interval, so it is a real effect and not noise. This is
+consistent with "the machine becomes known as the series runs".
+
+It does **not** isolate the motor, though. Everything learnable is
+learned over a 節 -- the racer's condition, the water, how the 進入 is
+settling -- so the gradient cannot distinguish 機力 from any other
+factor that resolves with repetition. And the motor's own size was
+already measured: 2連率 terciles differ by only **2.4 pt** of win rate,
+with the raw fleet range (10.1-23.7%) overstating motor quality about
+fivefold.
+
+**水面** (直前情報, 2023-05以降, R1除く): 安定 (風≤2 波≤2) 24.86% /
+0.7581, 中間 23.63% / 0.7537, 荒天 (風≥5 or 波≥6) 22.04% / 0.7204.
+
+### 条件を積んでも 0.8173 が上限
+
+安定水面 × 節4日目以降 × 人気通り率上位3場 (徳山・大村・蒲郡),
+2023-05以降: **5,516 races, 29.62%, 0.8173 ±0.0356**, and it reproduces
+across halves (0.8266 前半 / 0.8080 後半). The best conditional cell
+found anywhere in this session, and still 18 points short of 1.0000.
+
+**The venue edge in that cell is a period effect, not a weather effect,**
+which is worth recording because the opposite is the natural reading:
+
+| 会場 | 2023-05より前(全天候) | 2023-05以降・それ以外 | 2023-05以降・安定 |
+|---|---|---|---|
+| 徳山 | 0.7546 | 0.8034 | 0.8421 |
+| 蒲郡 | 0.7742 | 0.7663 | 0.8179 |
+| 大村 | 0.7579 | **0.8540** | 0.8159 |
+
+All three rise after 2023-05 in *both* weather groups, and 大村's rough
+group beats its calm group. So "静水面だから人気通りに来て、だから儲かる"
+is not supported; what the recent period is doing was not established.
+
+### 歪みは人気の逆側にあった
+
+The only thing measured this session that cleared 1.0000 was the
+opposite of the search:
+
+| | レース数 | 1号艇勝率 | 回収率 | 95%区間 |
+|---|---|---|---|---|
+| 1号艇が1番人気 | 8,361 | 61.42% | 0.8509 | [0.8352, 0.8666] |
+| **1号艇が1番人気でない** | 2,688 | 31.81% | **1.1072** | [1.0338, 1.1807] |
+
+By 1号艇's own 単勝 odds band the gradient is monotone: 0.7902 (~1.3),
+0.8638, 0.8910, 0.9490, 1.0606 (3-5x), **1.3979 (5x~)**. Robustness: both
+halves of the window agree at odds≥3.0 (1.2194 and 1.0943), and dropping
+the five largest payouts of 112 hits in the 5x+ band still leaves 1.2559.
+
+Also measured for comparison, same window: **1号艇ベタ 0.9078** against
+**1番人気ベタ 0.7868** -- backing the inside lane blindly beats backing
+the favourite by 12 points.
+
+**Read it as a hypothesis, not a finding.** 1,840 races at odds≥3.0, an
+80-day window, and the odds-band cut was chosen after seeing the data.
+The prices are *closing* odds, which no bettor can act on. And the sign
+is opposite to the exotic markets, where the deep longshots are overbet
+(2連単 by 人気: 0.7457 / 0.7744 / 0.7824 / 0.7817 / 0.7736 / 0.7599 for
+ranks 1-6 -- essentially flat, no rank worth singling out).
+
+**Why it is the more promising direction anyway**: the takeout is fixed,
+so a profit can only come from mispricing, and 1番人気 is the ticket the
+most people examined. Looking for conditions where the favourite holds is
+looking where a distortion is least likely to have survived.
+
+This is exactly what item 2 (selection on price) exists to test, and as
+of today both halves of the evidence it needs are accumulating: the
+2-minute pre-deadline odds since 2026-08-01, and the 直前情報 model's
+probabilities since 2026-08-03.
+
+**Note on an earlier figure.** This session recomputed 1号艇単勝ベタ over
+2015 onward: **634,921 races, 53.39%, mean 1.69, return 0.9032.** The
+"単勝's lane 1 at 0.86" quoted in the exotics section above does not
+reproduce at that definition. The discrepancy was not chased down;
+whoever revisits it should re-derive the 0.86 rather than trust it.
