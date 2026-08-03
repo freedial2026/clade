@@ -27,6 +27,10 @@ models/*.pkl
 models/*.joblib
 catboost_info/
 
+# Generated dashboard snapshot -- written by db.dashboard_report, not
+# source; a per-environment artifact that changes every refresh cycle.
+web/dashboard/snapshot/*.json
+
 # IDE / OS
 .vscode/
 .idea/

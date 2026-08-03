@@ -642,6 +642,97 @@ PostgreSQL was checked against the real database (valid, `bi_too_late=0`,
 host tracks `origin/main`, so this needs a push, then `git pull`,
 `train_model --with-before-info`, and one crontab line.
 
+## A second, older deployment exists on .21 that this project's docs never recorded (2026-08-03)
+
+Discovered while wiring a dashboard: `boat.internal` (the LAN-only HTTPS
+domain the runtime host doc already names) does not 404 into nothing --
+it reverse-proxies to a **live systemd service**, `boat-prediction.service`,
+running `boat_prediction.app:app` under a dedicated `boatpred` system
+user from `/opt/boat-prediction`, active since 2026-07-29 13:32 JST.
+
+This is a second checkout of the same repo (`origin
+freedial2026/clade.git`), pinned at `5564b73` ("Add psycopg2-binary to
+the app extra") -- a commit from before this file's earliest entries, so
+whoever stood it up did it in a session this document has no record of.
+It currently serves only `/health` and `/ready` (`f85ce09` "Add minimal
+FastAPI health/readiness endpoints"); root returns a bare 404.
+
+`/opt/boat-prediction` is unreadable by `ash` directly (confirmed, matches
+what this file already said) but readable via `ash`'s passwordless sudo,
+which is how this was found. The `ash` checkout at `~ash/boat-prediction`
+and this `boatpred` one are independent: different commits, different
+unix users, same DATABASE_URL peer-auth pattern (`.env` there also has no
+password). Nothing here has touched `/opt/boat-prediction` or the
+`boat-prediction.service` unit -- the dashboard below was added to the
+same nginx vhost via a *different* docroot and its own PHP-FPM pool,
+leaving the FastAPI service and its `/health`/`/ready` paths untouched.
+
+## PHP dashboard deployed at https://boat.internal/ (2026-08-03)
+
+The user supplied `boatrace_php_multi_venue_dashboard_v4.zip` (a
+static-array-driven PHP template: multi-venue race board, per-race
+decision card, session-only paper-bet API) and asked for it live at the
+.21 domain, plus a report of collection counts and current ROI.
+
+Vendored under `web/dashboard/` in the repo, with two additions:
+
+- `data/production-dashboard.php` -- reads a JSON snapshot rather than
+  the vendor's hardcoded sample array. DB access stays in Python
+  entirely; PHP's only job is `json_decode` and render.
+- `src/boat_prediction/db/dashboard_report.py` -- builds that JSON from
+  the same SQLAlchemy models every other report in this project uses.
+  Per race: card/preview model probability (from `race_predictions`,
+  latest by `predicted_at`), latest live (non-closing) win odds, a
+  `data_availability` dict built from real presence checks against the
+  13-item catalog the vendor template ships with, and a `decision_status`
+  (`candidate`/`waiting`/`skip`) from `expected_value = p * odds`
+  against a 1.0 threshold -- descriptive, not a recommendation, and nothing
+  it computes is ever staked automatically (`risk.actual_betting_enabled`
+  is hardcoded `False`).
+
+  Two keys beyond the vendor's schema, additive so `validate_dashboard_data`
+  needs no change: `collection_report` (row counts per live-capture
+  source, with date ranges -- real numbers, not a claim) and `roi_report`
+  (the measured backtest figures from `evaluate_p2` and the archive,
+  hand-curated as static constants and clearly labelled "締切時オッズに
+  よるバックテスト結果です。実際に賭けられる価格ではなく、ライブの損益
+  ではありません" -- because they are backtests on closing prices, not a
+  live ledger, and nothing here should read as one).
+
+Verified against real data before deploying: 14 races / 3 venues in a
+6-hour horizon, rendered locally with `php -S` against a real snapshot
+pulled from .21, zero console errors, zero PHP warnings.
+
+### Deployment shape
+
+`boat.internal`'s nginx vhost already proxied `/` to the FastAPI service
+above; that stays for `/health` and `/ready` only. Everything else now
+serves the dashboard from a **separate docroot and PHP-FPM pool**,
+matching the `realestate` site's existing pattern on this host
+(dedicated pool, dedicated unix-socket, `user`/`group` scoped to one
+service) rather than sharing PHP-FPM with anything else:
+
+- Docroot `/srv/boat-dashboard/`, owned by `boatpred:boatpred` (the
+  project's existing dedicated system user, reused rather than creating
+  a new one) -- deployed via `git pull` on `~ash/boat-prediction` then a
+  `sudo` copy, same pattern the rest of the project already deploys with.
+- PHP-FPM pool `boat-dashboard` (`/etc/php/8.4/fpm/pool.d/`), its own
+  socket, `env[DASHBOARD_DATA_FILE]` pointed at
+  `production-dashboard.php` so the FPM pool's own config picks the
+  real-data path rather than the vendor sample.
+- nginx: `docs/`, `*.md`, `*.csv`, and `snapshot/` denied direct access;
+  everything else PHP-FPM/static as normal. `nginx -t` before every
+  reload.
+- `dashboard_report.py --output` refreshed on a cron line as `ash` (same
+  DB peer-auth as every other job), written to a world-readable path so
+  `boatpred`'s PHP-FPM can read it without a group/ownership change on
+  either account.
+
+Not yet done: no cron line installed for the refresh yet (see the next
+session or a follow-up in this one), and the TLS cert on `boat-internal.conf`
+is self-signed, so a browser will warn on first visit -- accept it or
+add the cert as trusted, same as for any other self-signed LAN service.
+
 ## Next, in order
 
 Reordered 2026-08-01 after a day of measurement against real data. See

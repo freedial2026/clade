@@ -1,0 +1,19 @@
+﻿path,type,required,display_name,example,source_or_calculation,missing_action
+site.page_title,string,yes,ページタイトル,Race Decision Desk,application config,startup error
+site.last_updated_at,ISO8601,yes,最終更新,2026-08-01T22:04:00+09:00,data aggregation time,show unavailable
+risk.bankroll_yen,int,yes,検証資金,100000,user setting,show 0
+risk.daily_limit_yen,int,yes,本日上限,2000,risk setting,paper bet disabled
+venues[].venue_code,string,yes,会場コード,05,venue master,exclude venue
+venues[].venue_name,string,yes,会場名,多摩川,venue master,exclude venue
+races[].race_id,string,yes,レースID,20260801-05-10,date+venue+race,exclude race
+races[].scheduled_deadline_at,ISO8601,yes,締切予定,2026-08-01T22:20:00+09:00,B-file,exclude race
+races[].decision_status,enum,yes,判断状態,candidate,decision policy,default skip
+races[].recommended_bet,object,yes,買い目候補,2連単 1→3,decision policy,no bet option
+races[].max_stake_yen,int,yes,レース上限,400,risk policy,0
+races[].current_odds,float|null,yes,今のオッズ,5.8,live odds snapshot,skip
+races[].odds_5_minutes_ago,float|null,yes,5分前オッズ,5.4,historical snapshot,show comparison unavailable
+races[].expected_return_per_100_yen,int|null,yes,100円の期待払戻,108,100*adjusted_probability*odds,waiting or skip
+races[].data_availability,"map<string,bool>",yes,必要データ取得状態,current_odds=true,source registry,critical missing -> reject
+races[].data_coverage.obtained,int,calculated,取得済み件数,12,helpers.php,recalculate
+races[].data_coverage.total,int,calculated,必要件数,13,helpers.php,recalculate
+races[].data_coverage.missing_labels,string[],calculated,未取得項目,部品交換情報,helpers.php,display labels

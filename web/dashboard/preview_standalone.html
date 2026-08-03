@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <!-- $site['page_title'] -->
+  <title>Race Decision Desk — 複数会場ダッシュボード</title>
+  <!-- $site['meta_description'] -->
+  <meta name="description" content="複数会場の締切、買い目候補、使用上限、オッズ変化、必要データの取得状況を一画面で比較する紙上投票ダッシュボード。">
+  <style>
+*{box-sizing:border-box}:root{--bg:#07101d;--surface:#0d1929;--surface2:#122238;--line:#22344d;--text:#eef5ff;--muted:#8ea2bb;--cyan:#4dd7de;--green:#3ed598;--amber:#ffbd55;--red:#ff7070;--blue:#6fa9ff;--shadow:0 18px 50px rgba(0,0,0,.28)}html{color-scheme:dark}body{margin:0;background:radial-gradient(circle at 50% -20%,#163052 0,#07101d 48%,#050b14 100%);color:var(--text);font-family:Inter,"Noto Sans JP","Yu Gothic UI",system-ui,sans-serif;min-height:100vh}button,input,select{font:inherit}button{cursor:pointer}.app-shell{max-width:1640px;margin:auto;padding:0 24px 48px}.topbar{height:74px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.08)}.brand{display:flex;align-items:center;gap:12px}.brand-mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#05131d;font-weight:900;display:grid;place-items:center}.brand strong,.brand span{display:block}.brand span{font-size:11px;color:var(--muted);margin-top:2px}.header-status{display:flex;align-items:center;gap:8px}.status-chip,.mini-chip{font-size:11px;color:#b8c9db;border:1px solid var(--line);background:rgba(12,25,42,.8);padding:7px 10px;border-radius:999px}.status-live i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(62,213,152,.12);margin-right:8px}.card-panel{background:linear-gradient(180deg,rgba(18,34,56,.96),rgba(10,22,37,.96));border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}.risk-strip{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr)) 2fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:18px 0}.risk-strip>div{padding:12px 15px;background:rgba(13,25,41,.96)}.risk-strip span{display:block;font-size:11px;color:var(--muted)}.risk-strip strong{font-size:16px;margin-top:3px;display:block}.risk-progress-label{display:flex;justify-content:space-between}.risk-progress{height:8px;border-radius:20px;background:#1c2d43;margin-top:8px;overflow:hidden}.risk-progress span{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--amber));transition:.25s}.urgent-section{padding:20px}.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.section-heading h1,.section-heading h2{margin:4px 0 0;font-size:22px}.section-heading.compact h2{font-size:18px}.eyebrow{font-size:10px;letter-spacing:.18em;font-weight:800;color:var(--cyan)}.updated,.board-summary{font-size:11px;color:var(--muted)}.urgent-note{font-size:11px;color:var(--muted);margin:8px 0 14px}.deadline-lane{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow:auto;padding-bottom:4px}.deadline-card{border:1px solid var(--line);background:rgba(5,15,26,.48);border-radius:13px;padding:13px;min-width:190px;transition:.18s}.deadline-card:hover,.deadline-card.selected{border-color:var(--cyan);transform:translateY(-1px)}.deadline-head{display:flex;justify-content:space-between;align-items:center}.deadline-head strong{font-size:15px}.deadline-time{font-variant-numeric:tabular-nums;font-size:26px;font-weight:900;margin:11px 0 2px}.deadline-at{font-size:10px;color:var(--muted)}.deadline-detail{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:11px 0}.deadline-detail div{background:#0b1828;border-radius:8px;padding:7px}.deadline-detail span,.deadline-detail b{display:block}.deadline-detail span{font-size:9px;color:var(--muted)}.deadline-detail b{font-size:11px;margin-top:2px}.missing-data{font-size:9px;color:var(--amber);min-height:30px;line-height:1.4}.missing-data.complete{color:var(--green)}.deadline-action{width:100%;border:1px solid var(--line);background:#122139;color:#d9e7f5;border-radius:8px;padding:8px}.workspace-grid{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:18px;margin-top:18px}.workspace-main{min-width:0}.venue-overview,.race-board,.info-panel,.ticket-panel{padding:19px}.legend{display:flex;gap:12px;font-size:10px;color:var(--muted)}.legend span{display:flex;align-items:center;gap:5px}.dot{width:7px;height:7px;border-radius:50%}.dot.candidate{background:var(--green)}.dot.waiting{background:var(--amber)}.dot.skip{background:var(--red)}.venue-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.venue-card{border:1px solid var(--line);border-radius:12px;background:rgba(5,15,26,.42);padding:12px;cursor:pointer}.venue-card:hover,.venue-card.active{border-color:var(--cyan)}.venue-card-top{display:flex;justify-content:space-between;align-items:flex-start}.venue-id{display:flex;align-items:center;gap:9px}.venue-code{width:34px;height:34px;border-radius:9px;background:#dffeff;color:#07101d;display:grid;place-items:center;font-weight:900}.venue-id strong,.venue-id span{display:block}.venue-id span{font-size:9px;color:var(--muted)}.data-state{font-size:9px;color:var(--green)}.venue-card-mid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin:11px 0}.venue-card-mid div{background:#0a1626;border-radius:7px;padding:7px}.venue-card-mid span,.venue-card-mid b{display:block}.venue-card-mid span{font-size:8px;color:var(--muted)}.venue-card-mid b{font-size:11px;margin-top:2px}.venue-next{font-size:10px;color:var(--muted);display:flex;justify-content:space-between}.controls{display:flex;justify-content:space-between;align-items:center;margin:18px 0 11px}.segmented{display:flex;border:1px solid var(--line);border-radius:11px;padding:3px;background:#0a1525}.segmented button{border:0;background:transparent;color:var(--muted);padding:8px 12px;border-radius:8px}.segmented button.active{background:#1b304b;color:white}.control-right{display:flex;gap:8px}.search-box{display:flex;align-items:center;gap:7px;width:220px;border:1px solid var(--line);background:#0a1626;border-radius:10px;padding:0 10px}.search-box input{border:0;background:transparent;color:white;outline:0;padding:10px 0;width:100%}.controls select,.ticket-panel select,.ticket-panel input{border:1px solid var(--line);background:#0a1626;color:var(--text);border-radius:10px;padding:10px 11px;outline:none}.table-wrap{overflow:auto;margin-top:14px}table{width:100%;border-collapse:collapse;min-width:1250px}th{font-size:9px;color:#71869f;text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}td{padding:12px 8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;white-space:nowrap}tbody tr:hover{background:rgba(255,255,255,.025)}.decision-pill{font-size:9px;padding:5px 7px;border-radius:999px;font-weight:800}.decision-pill.candidate{color:var(--green);background:rgba(62,213,152,.12)}.decision-pill.waiting{color:var(--amber);background:rgba(255,189,85,.12)}.decision-pill.skip{color:var(--red);background:rgba(255,112,112,.12)}.candidate-text{color:var(--green)}.waiting-text{color:var(--amber)}.skip-text{color:var(--red)}.select-race{border:1px solid var(--line);background:#122139;color:#d9e7f5;border-radius:8px;padding:7px 9px}.mobile-race-list{display:none}.ticket-panel{position:sticky;top:12px;align-self:start}.text-button{border:0;background:transparent;color:var(--muted)}.selected-race-banner{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center;background:#07132080;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:11px;margin:14px 0}.selected-race-banner>span{width:40px;height:40px;border-radius:10px;background:#dffeff;color:#07101d;display:grid;place-items:center;font-weight:900}.selected-race-banner small,.selected-race-banner strong,.selected-race-banner b{display:block}.selected-race-banner small,.selected-race-banner b{color:var(--muted);font-size:9px}.mini-countdown{text-align:right}.mini-countdown strong{font-size:17px;font-variant-numeric:tabular-nums}.decision-box{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:11px;overflow:hidden}.decision-box div{padding:10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.decision-box div:nth-child(2n){border-right:0}.decision-box div:nth-last-child(-n+2){border-bottom:0}.decision-box span,.decision-box strong{display:block}.decision-box span{font-size:9px;color:var(--muted)}.decision-box strong{font-size:12px;margin-top:2px}.data-detail-box,.plain-explanation{padding:10px;border-radius:9px;margin-top:10px}.data-detail-box{background:rgba(77,215,222,.07);border:1px solid rgba(77,215,222,.17)}.data-detail-box strong,.data-detail-box span,.plain-explanation strong,.plain-explanation span{display:block}.data-detail-box strong,.plain-explanation strong{font-size:11px}.data-detail-box span,.plain-explanation span{font-size:10px;color:var(--muted);line-height:1.5;margin-top:4px}.plain-explanation{background:rgba(255,189,85,.07);border:1px solid rgba(255,189,85,.16)}.ticket-panel label>span{display:block;color:var(--muted);font-size:10px;margin:12px 0 6px}.ticket-panel select{width:100%}.amount-input{display:flex;align-items:center;border:1px solid var(--line);background:#0a1626;border-radius:10px;padding-left:11px}.amount-input input{border:0;background:transparent;font-size:20px;font-weight:800;padding-left:6px;width:100%}.quick-amounts{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}.quick-amounts button{border:1px solid var(--line);background:#122139;color:#bfcde0;border-radius:8px;padding:7px}.ticket-metrics{margin:14px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.ticket-metrics div{display:flex;justify-content:space-between;padding:8px 0;font-size:11px}.ticket-metrics span{color:var(--muted)}.reason-list{display:grid;gap:6px}.reason-item{font-size:10px;padding:8px;border-radius:8px;background:rgba(255,255,255,.035);display:flex;justify-content:space-between;gap:10px}.reason-item span{color:var(--muted)}.reason-item.positive strong{color:var(--green)}.reason-item.neutral strong{color:var(--amber)}.reason-item.risk strong{color:var(--red)}.ticket-warning{padding:9px;border-radius:8px;background:rgba(255,112,112,.12);border:1px solid rgba(255,112,112,.35);font-size:11px;color:#ffc1c1;margin-top:10px}.confirm-check{display:flex;gap:8px;align-items:flex-start;margin:12px 0}.confirm-check input{width:auto;margin-top:2px}.confirm-check span{margin:0!important}.primary-action,.secondary-action{width:100%;border-radius:10px;padding:11px 13px;font-weight:800}.primary-action{border:0;background:linear-gradient(135deg,var(--cyan),#5ea3ff);color:#06111e}.primary-action:disabled{opacity:.35;cursor:not-allowed}.secondary-action{margin-top:7px;border:1px solid var(--line);background:#0b1828;color:#9eb0c5}.fine-print{font-size:9px;line-height:1.5;color:var(--muted)}.lower-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:18px}.odds-history{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:15px}.odds-point{background:#0a1626;border:1px solid var(--line);border-radius:9px;padding:10px;text-align:center}.odds-point span,.odds-point b{display:block}.odds-point span{font-size:9px;color:var(--muted)}.odds-point b{font-size:14px;margin-top:3px}.chart-callout{padding:10px 12px;border-radius:10px;background:rgba(77,215,222,.08);margin-top:10px}.chart-callout strong,.chart-callout span{display:block}.chart-callout strong{font-size:12px;color:var(--cyan)}.chart-callout span{font-size:10px;color:var(--muted);margin-top:3px}.health-list{margin-top:13px}.health-list div{display:grid;grid-template-columns:1fr auto;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:11px}.health-list .ok{color:var(--green)}.health-list .missing{color:var(--red)}.coverage-note{padding:11px;margin-top:13px;background:#0a1625;border-radius:10px}.coverage-note strong,.coverage-note span{display:block}.coverage-note strong{font-size:11px}.coverage-note span{font-size:10px;color:var(--muted);margin-top:5px}.empty-log{min-height:210px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;color:var(--muted);gap:6px}.empty-log strong{color:#b9c7d7}.empty-log span{font-size:10px}.log-entry{padding:9px;border-bottom:1px solid var(--line);font-size:10px}.log-entry strong,.log-entry span{display:block}.log-entry span{color:var(--muted);margin-top:3px}footer{display:flex;justify-content:space-between;color:#61758c;font-size:10px;padding:18px 2px}.modal-backdrop{position:fixed;inset:0;background:rgba(2,7,13,.78);display:grid;place-items:center;padding:20px;z-index:50}.modal-backdrop[hidden]{display:none}.modal{width:min(430px,100%);padding:24px;background:#102038;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}.modal h2{margin:6px 0 18px}.modal-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px}.modal-summary div{background:#0a1626;border-radius:10px;padding:10px}.modal-summary span,.modal-summary strong{display:block}.modal-summary span{font-size:9px;color:var(--muted)}.modal-risk{margin:14px 0;padding:12px;background:rgba(255,189,85,.09);border:1px solid rgba(255,189,85,.25);border-radius:10px}.modal-risk strong,.modal-risk span{display:block}.modal-risk strong{font-size:12px;color:var(--amber)}.modal-risk span{font-size:10px;color:var(--muted);margin-top:4px}.modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}.modal-actions .secondary-action{margin:0}.toast{position:fixed;right:22px;bottom:22px;background:#15304a;color:white;padding:12px 16px;border:1px solid #2f526f;border-radius:11px;box-shadow:var(--shadow);opacity:0;transform:translateY(12px);pointer-events:none;transition:.2s;z-index:60}.toast.show{opacity:1;transform:none}[hidden]{display:none!important}
+@media(max-width:1150px){.workspace-grid{grid-template-columns:1fr}.ticket-panel{position:static}.venue-grid{grid-template-columns:repeat(2,1fr)}.lower-grid{grid-template-columns:1fr 1fr}.lower-grid article:first-child{grid-column:1/-1}.risk-strip{grid-template-columns:repeat(4,1fr)}.risk-progress-wrap{grid-column:1/-1}}
+@media(max-width:720px){.app-shell{padding:0 12px 90px}.topbar{height:62px}.header-status .status-chip:nth-child(2){display:none}.risk-strip{grid-template-columns:1fr 1fr}.risk-progress-wrap{grid-column:1/-1}.deadline-lane{display:flex}.venue-grid{grid-template-columns:1fr 1fr}.controls{flex-direction:column;align-items:stretch;gap:8px}.control-right{display:grid;grid-template-columns:1fr auto}.search-box{width:100%}.segmented{overflow:auto}.table-wrap{display:none}.mobile-race-list{display:grid;gap:9px;margin-top:13px}.mobile-card{padding:12px;border:1px solid var(--line);border-radius:11px;background:#07132080}.mobile-card-head,.mobile-card-actions{display:flex;justify-content:space-between;gap:8px}.mobile-card-head strong,.mobile-card-head span{display:block}.mobile-card-head span{font-size:9px;color:var(--muted)}.mobile-card-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin:10px 0}.mobile-card-stats div{background:#0a1626;border-radius:7px;padding:7px}.mobile-card-stats span,.mobile-card-stats b{display:block}.mobile-card-stats span{font-size:8px;color:var(--muted)}.mobile-card-stats b{font-size:10px;margin-top:2px}.mobile-card-actions{font-size:9px;color:var(--muted);align-items:center}.lower-grid{grid-template-columns:1fr}.lower-grid article:first-child{grid-column:auto}footer{flex-direction:column;gap:4px}.ticket-panel{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:30;border-radius:16px 16px 0 0;max-height:88vh;overflow:auto;transform:translateY(calc(100% - 62px));transition:.25s}.ticket-panel.open{transform:translateY(0)}.ticket-heading{cursor:pointer}.odds-history{grid-template-columns:repeat(5,minmax(60px,1fr));overflow:auto}}
+
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">RD</div>
+      <div>
+        <!-- $site['brand_name'] / $site['brand_subtitle'] -->
+        <strong>Race Decision Desk</strong>
+        <span>Multi-venue decision support</span>
+      </div>
+    </div>
+    <div class="header-status">
+      <!-- $activeVenueCount -->
+      <span class="status-chip status-live"><i></i><b id="activeVenueCount">6</b>会場開催中</span>
+      <!-- $remainingRaceCount -->
+      <span class="status-chip"><b id="remainingRaceCount">19</b>レース残り</span>
+      <!-- $site['operating_mode_label'] -->
+      <span class="status-chip">紙上投票モード</span>
+    </div>
+  </header>
+
+  <section class="risk-strip" aria-label="資金と上限">
+    <!-- $risk['bankroll_yen'] -->
+    <div><span>検証資金</span><strong>¥100,000</strong></div>
+    <!-- $risk['spent_today_yen'] -->
+    <div><span>本日使用</span><strong id="spentValue">¥0</strong></div>
+    <!-- $risk['daily_limit_yen'] -->
+    <div><span>本日上限</span><strong>¥2,000</strong></div>
+    <!-- $remainingDailyLimitYen -->
+    <div><span>残り上限</span><strong id="remainingValue">¥2,000</strong></div>
+    <div class="risk-progress-wrap">
+      <div class="risk-progress-label"><span>日次利用率</span><span id="riskPercent">0%</span></div>
+      <div class="risk-progress"><span id="riskProgress" style="width:0%"></span></div>
+    </div>
+  </section>
+
+  <main>
+    <section class="urgent-section card-panel">
+      <div class="section-heading">
+        <div><span class="eyebrow">NEXT DEADLINES ACROSS VENUES</span><h1>複数会場の次締切</h1></div>
+        <!-- $site['last_updated_at'] -->
+        <div class="updated">最終更新 <b id="lastUpdated">22:04:00</b></div>
+      </div>
+      <div class="urgent-note">締切が近い順です。必要データは割合ではなく、取得済み件数と不足項目を表示します。</div>
+      <div class="deadline-lane" id="deadlineLane">
+                  <article class="deadline-card" data-race-id="20260801-05-10">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>多摩川 10R</strong>
+              <span class="decision-pill candidate">検証候補</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:20:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:20</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>2連単 1→3</b></div>
+              <div><span>このレースの上限</span><b>¥400</b></div>
+              <div><span>100円の期待払戻</span><b>108円</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>12 / 13項目</b></div>
+            </div>
+                          <div class="missing-data">未取得：部品交換情報</div>
+                        <button class="deadline-action" data-select-race="20260801-05-10">このレースを選択</button>
+          </article>
+                  <article class="deadline-card" data-race-id="20260801-01-10">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>桐生 10R</strong>
+              <span class="decision-pill waiting">情報待ち</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:27:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:27</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>単勝 1</b></div>
+              <div><span>このレースの上限</span><b>¥200</b></div>
+              <div><span>100円の期待払戻</span><b>98円</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>12 / 13項目</b></div>
+            </div>
+                          <div class="missing-data">未取得：風・波・水面情報</div>
+                        <button class="deadline-action" data-select-race="20260801-01-10">このレースを選択</button>
+          </article>
+                  <article class="deadline-card" data-race-id="20260801-04-11">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>平和島 11R</strong>
+              <span class="decision-pill skip">見送り</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:31:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:31</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>— —</b></div>
+              <div><span>このレースの上限</span><b>¥0</b></div>
+              <div><span>100円の期待払戻</span><b>算出不可</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>9 / 13項目</b></div>
+            </div>
+                          <div class="missing-data">未取得：展示進入・部品交換情報・現在オッズ・直前情報反映後の予測</div>
+                        <button class="deadline-action" data-select-race="20260801-04-11">このレースを選択</button>
+          </article>
+                  <article class="deadline-card" data-race-id="20260801-12-09">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>住之江 9R</strong>
+              <span class="decision-pill candidate">検証候補</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:38:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:38</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>2連単 1→2</b></div>
+              <div><span>このレースの上限</span><b>¥300</b></div>
+              <div><span>100円の期待払戻</span><b>105円</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>13 / 13項目</b></div>
+            </div>
+                          <div class="missing-data complete">すべて取得済み</div>
+                        <button class="deadline-action" data-select-race="20260801-12-09">このレースを選択</button>
+          </article>
+                  <article class="deadline-card" data-race-id="20260801-15-10">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>丸亀 10R</strong>
+              <span class="decision-pill waiting">情報待ち</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:44:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:44</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>2連複 1–2</b></div>
+              <div><span>このレースの上限</span><b>¥200</b></div>
+              <div><span>100円の期待払戻</span><b>100円</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>12 / 13項目</b></div>
+            </div>
+                          <div class="missing-data">未取得：部品交換情報</div>
+                        <button class="deadline-action" data-select-race="20260801-15-10">このレースを選択</button>
+          </article>
+                  <article class="deadline-card" data-race-id="20260801-24-09">
+            <div class="deadline-head">
+              <!-- $race['venue_name'] / $race['race_number'] -->
+              <strong>大村 9R</strong>
+              <span class="decision-pill skip">見送り</span>
+            </div>
+            <!-- $race['scheduled_deadline_at'] -->
+            <div class="deadline-time" data-deadline-at="2026-08-01T22:53:00+09:00">--:--</div>
+            <div class="deadline-at">締切 22:53</div>
+            <div class="deadline-detail">
+              <div><span>買い目候補</span><b>— —</b></div>
+              <div><span>このレースの上限</span><b>¥0</b></div>
+              <div><span>100円の期待払戻</span><b>76円</b></div>
+              <!-- $coverage['obtained'] / $coverage['total'] -->
+              <div><span>必要データ</span><b>13 / 13項目</b></div>
+            </div>
+                          <div class="missing-data complete">すべて取得済み</div>
+                        <button class="deadline-action" data-select-race="20260801-24-09">このレースを選択</button>
+          </article>
+              </div>
+    </section>
+
+    <section class="workspace-grid">
+      <div class="workspace-main">
+        <section class="venue-overview card-panel">
+          <div class="section-heading compact">
+            <div><span class="eyebrow">VENUE OVERVIEW</span><h2>会場別の状況</h2></div>
+            <div class="legend"><span><i class="dot candidate"></i>検証候補</span><span><i class="dot waiting"></i>情報待ち</span><span><i class="dot skip"></i>見送り</span></div>
+          </div>
+          <div class="venue-grid" id="venueGrid">
+                          <article class="venue-card" data-filter-venue="01">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">01</span>
+                    <div><strong>桐生</strong><span>淡水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 12/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>3R</b></div>
+                  <div><span>検証候補</span><b>1</b></div>
+                  <div><span>情報待ち</span><b>1</b></div>
+                </div>
+                <div class="venue-next"><span>次 10R</span><strong>22:27</strong></div>
+              </article>
+                          <article class="venue-card" data-filter-venue="04">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">04</span>
+                    <div><strong>平和島</strong><span>海水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 9/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>2R</b></div>
+                  <div><span>検証候補</span><b>0</b></div>
+                  <div><span>情報待ち</span><b>1</b></div>
+                </div>
+                <div class="venue-next"><span>次 11R</span><strong>22:31</strong></div>
+              </article>
+                          <article class="venue-card" data-filter-venue="05">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">05</span>
+                    <div><strong>多摩川</strong><span>淡水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 12/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>3R</b></div>
+                  <div><span>検証候補</span><b>1</b></div>
+                  <div><span>情報待ち</span><b>0</b></div>
+                </div>
+                <div class="venue-next"><span>次 10R</span><strong>22:20</strong></div>
+              </article>
+                          <article class="venue-card" data-filter-venue="12">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">12</span>
+                    <div><strong>住之江</strong><span>淡水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 13/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>4R</b></div>
+                  <div><span>検証候補</span><b>1</b></div>
+                  <div><span>情報待ち</span><b>1</b></div>
+                </div>
+                <div class="venue-next"><span>次 9R</span><strong>22:38</strong></div>
+              </article>
+                          <article class="venue-card" data-filter-venue="15">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">15</span>
+                    <div><strong>丸亀</strong><span>海水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 12/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>3R</b></div>
+                  <div><span>検証候補</span><b>0</b></div>
+                  <div><span>情報待ち</span><b>2</b></div>
+                </div>
+                <div class="venue-next"><span>次 10R</span><strong>22:44</strong></div>
+              </article>
+                          <article class="venue-card" data-filter-venue="24">
+                <div class="venue-card-top">
+                  <div class="venue-id">
+                    <span class="venue-code">24</span>
+                    <div><strong>大村</strong><span>海水</span></div>
+                  </div>
+                  <!-- $venue['required_data_obtained'] / $venue['required_data_total'] -->
+                  <span class="data-state">必要データ 13/13</span>
+                </div>
+                <div class="venue-card-mid">
+                  <div><span>残りレース</span><b>4R</b></div>
+                  <div><span>検証候補</span><b>0</b></div>
+                  <div><span>情報待ち</span><b>1</b></div>
+                </div>
+                <div class="venue-next"><span>次 9R</span><strong>22:53</strong></div>
+              </article>
+                      </div>
+        </section>
+
+        <section class="controls">
+          <div class="segmented" role="group" aria-label="一覧の表示方法">
+            <button class="active" data-filter-status="all">すべて</button>
+            <button data-filter-status="candidate">検証候補</button>
+            <button data-filter-status="waiting">情報待ち</button>
+            <button data-filter-status="skip">見送り</button>
+          </div>
+          <div class="control-right">
+            <label class="search-box"><span>⌕</span><input id="raceSearch" type="search" placeholder="会場名・レース番号"></label>
+            <select id="venueFilter" aria-label="会場で絞り込み">
+              <option value="all">全会場</option>
+              <option value="01">桐生</option><option value="04">平和島</option><option value="05">多摩川</option><option value="12">住之江</option><option value="15">丸亀</option><option value="24">大村</option>            </select>
+          </div>
+        </section>
+
+        <section class="race-board card-panel">
+          <div class="section-heading compact">
+            <div><span class="eyebrow">RACE BOARD</span><h2>全会場・締切順</h2></div>
+            <span class="board-summary" id="boardSummary">6レース</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>締切</th><th>会場</th><th>R</th><th>状態</th><th>買い目候補</th><th>レース上限</th><th>今のオッズ</th><th>5分前→現在</th><th>100円の期待払戻</th><th>必要データ</th><th>不足項目</th><th></th></tr></thead>
+              <tbody id="raceRows">
+                              <tr data-race-row data-race-id="20260801-05-10" data-venue-code="05" data-decision-status="candidate" data-search-text="多摩川10R">
+                  <td>22:20</td>
+                  <td>多摩川</td>
+                  <td><strong>10R</strong></td>
+                  <td><span class="decision-pill candidate">検証候補</span></td>
+                  <td>2連単 1→3</td>
+                  <td>¥400</td>
+                  <td>5.8倍</td>
+                  <td>5.4倍 → 5.8倍</td>
+                  <td>108円</td>
+                  <td>12 / 13</td>
+                  <td>部品交換情報</td>
+                  <td><button class="select-race" data-select-race="20260801-05-10">選択</button></td>
+                </tr>
+                              <tr data-race-row data-race-id="20260801-01-10" data-venue-code="01" data-decision-status="waiting" data-search-text="桐生10R">
+                  <td>22:27</td>
+                  <td>桐生</td>
+                  <td><strong>10R</strong></td>
+                  <td><span class="decision-pill waiting">情報待ち</span></td>
+                  <td>単勝 1</td>
+                  <td>¥200</td>
+                  <td>1.7倍</td>
+                  <td>1.8倍 → 1.7倍</td>
+                  <td>98円</td>
+                  <td>12 / 13</td>
+                  <td>風・波・水面情報</td>
+                  <td><button class="select-race" data-select-race="20260801-01-10">選択</button></td>
+                </tr>
+                              <tr data-race-row data-race-id="20260801-04-11" data-venue-code="04" data-decision-status="skip" data-search-text="平和島11R">
+                  <td>22:31</td>
+                  <td>平和島</td>
+                  <td><strong>11R</strong></td>
+                  <td><span class="decision-pill skip">見送り</span></td>
+                  <td>— —</td>
+                  <td>¥0</td>
+                  <td>—</td>
+                  <td>— → —</td>
+                  <td>算出不可</td>
+                  <td>9 / 13</td>
+                  <td>展示進入・部品交換情報・現在オッズ・直前情報反映後の予測</td>
+                  <td><button class="select-race" data-select-race="20260801-04-11">選択</button></td>
+                </tr>
+                              <tr data-race-row data-race-id="20260801-12-09" data-venue-code="12" data-decision-status="candidate" data-search-text="住之江9R">
+                  <td>22:38</td>
+                  <td>住之江</td>
+                  <td><strong>9R</strong></td>
+                  <td><span class="decision-pill candidate">検証候補</span></td>
+                  <td>2連単 1→2</td>
+                  <td>¥300</td>
+                  <td>4.2倍</td>
+                  <td>4.1倍 → 4.2倍</td>
+                  <td>105円</td>
+                  <td>13 / 13</td>
+                  <td>なし</td>
+                  <td><button class="select-race" data-select-race="20260801-12-09">選択</button></td>
+                </tr>
+                              <tr data-race-row data-race-id="20260801-15-10" data-venue-code="15" data-decision-status="waiting" data-search-text="丸亀10R">
+                  <td>22:44</td>
+                  <td>丸亀</td>
+                  <td><strong>10R</strong></td>
+                  <td><span class="decision-pill waiting">情報待ち</span></td>
+                  <td>2連複 1–2</td>
+                  <td>¥200</td>
+                  <td>3.4倍</td>
+                  <td>3.4倍 → 3.4倍</td>
+                  <td>100円</td>
+                  <td>12 / 13</td>
+                  <td>部品交換情報</td>
+                  <td><button class="select-race" data-select-race="20260801-15-10">選択</button></td>
+                </tr>
+                              <tr data-race-row data-race-id="20260801-24-09" data-venue-code="24" data-decision-status="skip" data-search-text="大村9R">
+                  <td>22:53</td>
+                  <td>大村</td>
+                  <td><strong>9R</strong></td>
+                  <td><span class="decision-pill skip">見送り</span></td>
+                  <td>— —</td>
+                  <td>¥0</td>
+                  <td>1.4倍</td>
+                  <td>1.5倍 → 1.4倍</td>
+                  <td>76円</td>
+                  <td>13 / 13</td>
+                  <td>なし</td>
+                  <td><button class="select-race" data-select-race="20260801-24-09">選択</button></td>
+                </tr>
+                            </tbody>
+            </table>
+          </div>
+          <div class="mobile-race-list">
+                          <article class="mobile-card" data-race-row data-race-id="20260801-05-10" data-venue-code="05" data-decision-status="candidate" data-search-text="多摩川10R">
+                <div class="mobile-card-head"><div><strong>多摩川 10R</strong><span>締切 22:20</span></div><span class="decision-pill candidate">検証候補</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>2連単 1→3</b></div><div><span>上限</span><b>¥400</b></div><div><span>必要データ</span><b>12/13</b></div></div>
+                <div class="mobile-card-actions"><span>未取得：部品交換情報</span><button class="select-race" data-select-race="20260801-05-10">選択</button></div>
+              </article>
+                          <article class="mobile-card" data-race-row data-race-id="20260801-01-10" data-venue-code="01" data-decision-status="waiting" data-search-text="桐生10R">
+                <div class="mobile-card-head"><div><strong>桐生 10R</strong><span>締切 22:27</span></div><span class="decision-pill waiting">情報待ち</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>単勝 1</b></div><div><span>上限</span><b>¥200</b></div><div><span>必要データ</span><b>12/13</b></div></div>
+                <div class="mobile-card-actions"><span>未取得：風・波・水面情報</span><button class="select-race" data-select-race="20260801-01-10">選択</button></div>
+              </article>
+                          <article class="mobile-card" data-race-row data-race-id="20260801-04-11" data-venue-code="04" data-decision-status="skip" data-search-text="平和島11R">
+                <div class="mobile-card-head"><div><strong>平和島 11R</strong><span>締切 22:31</span></div><span class="decision-pill skip">見送り</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>— —</b></div><div><span>上限</span><b>¥0</b></div><div><span>必要データ</span><b>9/13</b></div></div>
+                <div class="mobile-card-actions"><span>未取得：展示進入・部品交換情報・現在オッズ・直前情報反映後の予測</span><button class="select-race" data-select-race="20260801-04-11">選択</button></div>
+              </article>
+                          <article class="mobile-card" data-race-row data-race-id="20260801-12-09" data-venue-code="12" data-decision-status="candidate" data-search-text="住之江9R">
+                <div class="mobile-card-head"><div><strong>住之江 9R</strong><span>締切 22:38</span></div><span class="decision-pill candidate">検証候補</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>2連単 1→2</b></div><div><span>上限</span><b>¥300</b></div><div><span>必要データ</span><b>13/13</b></div></div>
+                <div class="mobile-card-actions"><span>すべて取得済み</span><button class="select-race" data-select-race="20260801-12-09">選択</button></div>
+              </article>
+                          <article class="mobile-card" data-race-row data-race-id="20260801-15-10" data-venue-code="15" data-decision-status="waiting" data-search-text="丸亀10R">
+                <div class="mobile-card-head"><div><strong>丸亀 10R</strong><span>締切 22:44</span></div><span class="decision-pill waiting">情報待ち</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>2連複 1–2</b></div><div><span>上限</span><b>¥200</b></div><div><span>必要データ</span><b>12/13</b></div></div>
+                <div class="mobile-card-actions"><span>未取得：部品交換情報</span><button class="select-race" data-select-race="20260801-15-10">選択</button></div>
+              </article>
+                          <article class="mobile-card" data-race-row data-race-id="20260801-24-09" data-venue-code="24" data-decision-status="skip" data-search-text="大村9R">
+                <div class="mobile-card-head"><div><strong>大村 9R</strong><span>締切 22:53</span></div><span class="decision-pill skip">見送り</span></div>
+                <div class="mobile-card-stats"><div><span>買い目候補</span><b>— —</b></div><div><span>上限</span><b>¥0</b></div><div><span>必要データ</span><b>13/13</b></div></div>
+                <div class="mobile-card-actions"><span>すべて取得済み</span><button class="select-race" data-select-race="20260801-24-09">選択</button></div>
+              </article>
+                      </div>
+        </section>
+      </div>
+
+      <aside class="ticket-panel card-panel" id="ticketPanel">
+        <div class="section-heading compact ticket-heading"><div><span class="eyebrow">COMMON BET SLIP</span><h2>共通投票票</h2></div><button class="text-button" id="clearTicket">クリア</button></div>
+        <div class="selected-race-banner">
+          <span id="selectedVenueCode">05</span>
+          <div><small>選択中</small><strong id="selectedRaceName">多摩川 10R</strong><b id="selectedDeadline">締切 22:20</b></div>
+          <div class="mini-countdown"><small>残り</small><strong id="selectedCountdown">--:--</strong></div>
+        </div>
+
+        <div class="decision-box">
+          <div><span>今の状態</span><strong id="selectedDecision" class="candidate-text">検証候補</strong></div>
+          <div><span>このレースの上限</span><strong id="selectedMaxStake">¥400</strong></div>
+          <div><span>100円の期待払戻</span><strong id="selectedExpectedReturn">108円</strong></div>
+          <div><span>必要データ</span><strong id="selectedDataCount">12 / 13項目</strong></div>
+        </div>
+        <div class="data-detail-box" id="selectedDataDetail">
+          <strong>ほぼ揃っています</strong>
+          <span>未取得：部品交換情報</span>
+        </div>
+        <div class="plain-explanation"><strong>「100円の期待払戻」の見方</strong><span>同じ条件を長期に繰り返した場合の平均見込みです。元本100円を含み、1回の利益や的中を保証しません。</span></div>
+
+        <label><span>買い目</span><select id="betOption"></select></label>
+        <label><span>金額</span><div class="amount-input"><span>¥</span><input id="stake" type="number" min="100" step="100" value="400" inputmode="numeric"></div></label>
+        <div class="quick-amounts"><button data-amount="100">100</button><button data-amount="300">300</button><button data-amount="500">500</button><button data-amount="1000">1,000</button></div>
+        <div class="ticket-metrics"><div><span>今のオッズ</span><b id="ticketOdds">5.8倍</b></div><div><span>的中時払戻目安</span><b id="estimatedPayout">—</b></div><div><span>最大損失</span><b id="maxLoss">—</b></div><div><span>投票後の残り上限</span><b id="afterLimit">—</b></div></div>
+        <div class="reason-list" id="selectedReasons"></div>
+        <div class="ticket-warning" id="ticketWarning" hidden></div>
+        <label class="confirm-check"><input type="checkbox" id="confirmCheck"><span>会場・レース・買い目・金額を確認しました</span></label>
+        <button class="primary-action" id="paperVote" disabled>紙上投票を記録</button>
+        <button class="secondary-action" disabled>実投票連携（無効）</button>
+        <p class="fine-print">実投票、自動購入、連敗時の増額、追加入金は実装していません。</p>
+      </aside>
+    </section>
+
+    <section class="lower-grid">
+      <article class="info-panel card-panel"><div class="section-heading compact"><div><span class="eyebrow">ODDS CHANGE</span><h2>選択レースのオッズの動き</h2></div><span class="mini-chip" id="chartLabel"></span></div><div class="odds-history" id="oddsHistory"></div><div class="chart-callout" id="chartCallout"></div></article>
+      <article class="info-panel card-panel"><div class="section-heading compact"><div><span class="eyebrow">DATA AVAILABILITY</span><h2>選択レースの取得状況</h2></div></div><div class="health-list" id="selectedAvailabilityList"></div><div class="coverage-note"><strong>分母とカバレッジ</strong><span id="coverageText"></span></div></article>
+      <article class="info-panel card-panel"><div class="section-heading compact"><div><span class="eyebrow">AUDIT LOG</span><h2>記録した紙上投票</h2></div></div><div class="empty-log" id="paperLog"><strong>まだ記録がありません</strong><span>会場、レース、買い目、金額、オッズ、モデル版を記録します。</span></div></article>
+    </section>
+  </main>
+  <footer><span>表示データはデモです。投資成果を保証するものではありません。</span><span>Model demo-multivenue-v4 / Policy paper-only-v2</span></footer>
+</div>
+
+<div class="modal-backdrop" id="confirmModal" hidden><div class="modal" role="dialog" aria-modal="true"><span class="eyebrow">FINAL CHECK</span><h2>紙上投票を記録しますか？</h2><div class="modal-summary" id="modalSummary"></div><div class="modal-risk"><strong>最大損失は投票額までです。</strong><span>損失を取り戻す目的の増額は行わないでください。</span></div><div class="modal-actions"><button class="secondary-action" id="cancelVote">戻る</button><button class="primary-action" id="confirmVote">記録する</button></div></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+window.DASHBOARD_DATA = {"site":{"page_title":"Race Decision Desk — 複数会場ダッシュボード","meta_description":"複数会場の締切、買い目候補、使用上限、オッズ変化、必要データの取得状況を一画面で比較する紙上投票ダッシュボード。","brand_name":"Race Decision Desk","brand_subtitle":"Multi-venue decision support","operating_mode_label":"紙上投票モード","model_version":"demo-multivenue-v4","policy_version":"paper-only-v2","last_updated_at":"2026-08-01T22:04:00+09:00"},"risk":{"bankroll_yen":100000,"spent_today_yen":0,"daily_limit_yen":2000,"minimum_stake_yen":100,"stake_unit_yen":100,"actual_betting_enabled":false,"paper_betting_enabled":true},"data_catalog":{"race_card":{"label":"出走表","critical":true},"scheduled_deadline":{"label":"締切予定時刻","critical":true},"racer_period_stats":{"label":"選手期別成績","critical":true},"course_stats":{"label":"コース別成績","critical":false},"motor_boat_stats":{"label":"モーター・ボート成績","critical":true},"prediction_card":{"label":"出走表時点の予測","critical":true},"before_info":{"label":"直前情報","critical":true},"exhibition_time":{"label":"展示タイム","critical":true},"exhibition_course":{"label":"展示進入","critical":true},"surface_conditions":{"label":"風・波・水面情報","critical":false},"parts_change":{"label":"部品交換情報","critical":false},"current_odds":{"label":"現在オッズ","critical":true},"prediction_preview":{"label":"直前情報反映後の予測","critical":true}},"venues":[{"venue_code":"01","venue_name":"桐生","water_type_label":"淡水","remaining_race_count":3,"candidate_count":1,"waiting_count":1,"next_race_id":"20260801-01-10","next_race_number":10,"next_deadline_at":"2026-08-01T22:27:00+09:00","required_data_obtained":12,"required_data_total":13},{"venue_code":"04","venue_name":"平和島","water_type_label":"海水","remaining_race_count":2,"candidate_count":0,"waiting_count":1,"next_race_id":"20260801-04-11","next_race_number":11,"next_deadline_at":"2026-08-01T22:31:00+09:00","required_data_obtained":9,"required_data_total":13},{"venue_code":"05","venue_name":"多摩川","water_type_label":"淡水","remaining_race_count":3,"candidate_count":1,"waiting_count":0,"next_race_id":"20260801-05-10","next_race_number":10,"next_deadline_at":"2026-08-01T22:20:00+09:00","required_data_obtained":12,"required_data_total":13},{"venue_code":"12","venue_name":"住之江","water_type_label":"淡水","remaining_race_count":4,"candidate_count":1,"waiting_count":1,"next_race_id":"20260801-12-09","next_race_number":9,"next_deadline_at":"2026-08-01T22:38:00+09:00","required_data_obtained":13,"required_data_total":13},{"venue_code":"15","venue_name":"丸亀","water_type_label":"海水","remaining_race_count":3,"candidate_count":0,"waiting_count":2,"next_race_id":"20260801-15-10","next_race_number":10,"next_deadline_at":"2026-08-01T22:44:00+09:00","required_data_obtained":12,"required_data_total":13},{"venue_code":"24","venue_name":"大村","water_type_label":"海水","remaining_race_count":4,"candidate_count":0,"waiting_count":1,"next_race_id":"20260801-24-09","next_race_number":9,"next_deadline_at":"2026-08-01T22:53:00+09:00","required_data_obtained":13,"required_data_total":13}],"races":[{"race_id":"20260801-05-10","venue_code":"05","venue_name":"多摩川","race_number":10,"scheduled_deadline_at":"2026-08-01T22:20:00+09:00","decision_status":"candidate","decision_label":"検証候補","recommended_bet":{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→3"},"available_bet_options":[{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→3"},{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→2"},{"bet_type_code":"win","bet_type_label":"単勝","combination":"1"}],"max_stake_yen":400,"current_odds":5.8,"odds_5_minutes_ago":5.4,"expected_return_per_100_yen":108,"model_probability":0.201,"uncertainty_adjusted_probability":0.186,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":true,"surface_conditions":true,"parts_change":false,"current_odds":true,"prediction_preview":true},"decision_reasons":[{"tone":"positive","title":"展示タイムが上位","detail":"レース内1位"},{"tone":"positive","title":"価格が改善","detail":"5.4倍から5.8倍"},{"tone":"neutral","title":"進入変更なし","detail":"展示進入は枠なり"},{"tone":"risk","title":"向かい風","detail":"5m/s"}],"odds_history":[5.1,5.2,5.4,5.6,5.8],"data_coverage":{"obtained":12,"total":13,"missing_codes":["parts_change"],"missing_labels":["部品交換情報"],"critical_missing_codes":[],"critical_missing_labels":[],"state_label":"ほぼ揃っています"}},{"race_id":"20260801-01-10","venue_code":"01","venue_name":"桐生","race_number":10,"scheduled_deadline_at":"2026-08-01T22:27:00+09:00","decision_status":"waiting","decision_label":"情報待ち","recommended_bet":{"bet_type_code":"win","bet_type_label":"単勝","combination":"1"},"available_bet_options":[{"bet_type_code":"win","bet_type_label":"単勝","combination":"1"}],"max_stake_yen":200,"current_odds":1.7,"odds_5_minutes_ago":1.8,"expected_return_per_100_yen":98,"model_probability":0.611,"uncertainty_adjusted_probability":0.576,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":true,"surface_conditions":false,"parts_change":true,"current_odds":true,"prediction_preview":true},"decision_reasons":[{"tone":"risk","title":"期待払戻が100円未満","detail":"現在98円"},{"tone":"neutral","title":"水面情報を再取得中","detail":"次回更新を待機"}],"odds_history":[1.9,1.9,1.8,1.8,1.7],"data_coverage":{"obtained":12,"total":13,"missing_codes":["surface_conditions"],"missing_labels":["風・波・水面情報"],"critical_missing_codes":[],"critical_missing_labels":[],"state_label":"ほぼ揃っています"}},{"race_id":"20260801-04-11","venue_code":"04","venue_name":"平和島","race_number":11,"scheduled_deadline_at":"2026-08-01T22:31:00+09:00","decision_status":"skip","decision_label":"見送り","recommended_bet":{"bet_type_code":"","bet_type_label":"—","combination":"—"},"available_bet_options":[],"max_stake_yen":0,"current_odds":null,"odds_5_minutes_ago":null,"expected_return_per_100_yen":null,"model_probability":null,"uncertainty_adjusted_probability":null,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":false,"surface_conditions":true,"parts_change":false,"current_odds":false,"prediction_preview":false},"decision_reasons":[{"tone":"risk","title":"重要データが不足","detail":"展示進入・現在オッズ未取得"},{"tone":"risk","title":"進入不確実","detail":"判断を停止"}],"odds_history":[],"data_coverage":{"obtained":9,"total":13,"missing_codes":["exhibition_course","parts_change","current_odds","prediction_preview"],"missing_labels":["展示進入","部品交換情報","現在オッズ","直前情報反映後の予測"],"critical_missing_codes":["exhibition_course","current_odds","prediction_preview"],"critical_missing_labels":["展示進入","現在オッズ","直前情報反映後の予測"],"state_label":"判断材料が不足"}},{"race_id":"20260801-12-09","venue_code":"12","venue_name":"住之江","race_number":9,"scheduled_deadline_at":"2026-08-01T22:38:00+09:00","decision_status":"candidate","decision_label":"検証候補","recommended_bet":{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→2"},"available_bet_options":[{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→2"},{"bet_type_code":"exacta","bet_type_label":"2連単","combination":"1→4"}],"max_stake_yen":300,"current_odds":4.2,"odds_5_minutes_ago":4.1,"expected_return_per_100_yen":105,"model_probability":0.268,"uncertainty_adjusted_probability":0.25,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":true,"surface_conditions":true,"parts_change":true,"current_odds":true,"prediction_preview":true},"decision_reasons":[{"tone":"positive","title":"必要データが全て揃った","detail":"13/13項目"},{"tone":"positive","title":"展示とモデルが一致","detail":"1号艇優位"}],"odds_history":[3.9,4,4.1,4.1,4.2],"data_coverage":{"obtained":13,"total":13,"missing_codes":[],"missing_labels":[],"critical_missing_codes":[],"critical_missing_labels":[],"state_label":"すべて取得済み"}},{"race_id":"20260801-15-10","venue_code":"15","venue_name":"丸亀","race_number":10,"scheduled_deadline_at":"2026-08-01T22:44:00+09:00","decision_status":"waiting","decision_label":"情報待ち","recommended_bet":{"bet_type_code":"quinella","bet_type_label":"2連複","combination":"1–2"},"available_bet_options":[{"bet_type_code":"quinella","bet_type_label":"2連複","combination":"1–2"}],"max_stake_yen":200,"current_odds":3.4,"odds_5_minutes_ago":3.4,"expected_return_per_100_yen":100,"model_probability":0.316,"uncertainty_adjusted_probability":0.294,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":true,"surface_conditions":true,"parts_change":false,"current_odds":true,"prediction_preview":true},"decision_reasons":[{"tone":"neutral","title":"予測とオッズの差が小さい","detail":"判断材料を追加待ち"}],"odds_history":[3.5,3.4,3.4,3.4,3.4],"data_coverage":{"obtained":12,"total":13,"missing_codes":["parts_change"],"missing_labels":["部品交換情報"],"critical_missing_codes":[],"critical_missing_labels":[],"state_label":"ほぼ揃っています"}},{"race_id":"20260801-24-09","venue_code":"24","venue_name":"大村","race_number":9,"scheduled_deadline_at":"2026-08-01T22:53:00+09:00","decision_status":"skip","decision_label":"見送り","recommended_bet":{"bet_type_code":"","bet_type_label":"—","combination":"—"},"available_bet_options":[],"max_stake_yen":0,"current_odds":1.4,"odds_5_minutes_ago":1.5,"expected_return_per_100_yen":76,"model_probability":0.721,"uncertainty_adjusted_probability":0.543,"data_availability":{"race_card":true,"scheduled_deadline":true,"racer_period_stats":true,"course_stats":true,"motor_boat_stats":true,"prediction_card":true,"before_info":true,"exhibition_time":true,"exhibition_course":true,"surface_conditions":true,"parts_change":true,"current_odds":true,"prediction_preview":true},"decision_reasons":[{"tone":"risk","title":"人気が集中","detail":"期待払戻76円"},{"tone":"risk","title":"価格面で見送り","detail":"的中予測と投資判断を分離"}],"odds_history":[1.6,1.5,1.5,1.4,1.4],"data_coverage":{"obtained":13,"total":13,"missing_codes":[],"missing_labels":[],"critical_missing_codes":[],"critical_missing_labels":[],"state_label":"すべて取得済み"}}]};
+window.DASHBOARD_CONFIG = {"csrfToken":"05772f178450040514345fc26bf9b320709076a9ea4a0e0f","paperBetEndpoint":""};
+</script>
+<script>
+(() => {
+  'use strict';
+  const data = window.DASHBOARD_DATA;
+  const config = window.DASHBOARD_CONFIG || {};
+  const races = data.races;
+  const catalog = data.data_catalog;
+  const risk = data.risk;
+  let selectedRace = races[0];
+  let statusFilter = 'all';
+  let venueFilter = 'all';
+  let spentToday = Number(risk.spent_today_yen || 0);
+
+  const $ = id => document.getElementById(id);
+  const yen = value => value == null ? '—' : new Intl.NumberFormat('ja-JP',{style:'currency',currency:'JPY',maximumFractionDigits:0}).format(value);
+  const oddsText = value => value == null ? '—' : `${Number(value).toFixed(1)}倍`;
+  const expectedText = value => value == null ? '算出不可' : `${Number(value).toFixed(0)}円`;
+  const countdownText = iso => {
+    const seconds = Math.max(0, Math.floor((new Date(iso).getTime() - Date.now()) / 1000));
+    return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+  };
+  const decisionClass = status => status === 'candidate' ? 'candidate-text' : status === 'waiting' ? 'waiting-text' : 'skip-text';
+  const selectedOption = () => {
+    const raw = $('betOption').value;
+    return selectedRace.available_bet_options.find(x => `${x.bet_type_code}|${x.combination}` === raw) || null;
+  };
+
+  function updateCountdowns() {
+    document.querySelectorAll('[data-deadline-at]').forEach(element => {
+      element.textContent = countdownText(element.dataset.deadlineAt);
+    });
+    $('selectedCountdown').textContent = countdownText(selectedRace.scheduled_deadline_at);
+    $('lastUpdated').textContent = new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+
+  function filterRows() {
+    const query = $('raceSearch').value.trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('[data-race-row]').forEach(row => {
+      const statusOk = statusFilter === 'all' || row.dataset.decisionStatus === statusFilter;
+      const venueOk = venueFilter === 'all' || row.dataset.venueCode === venueFilter;
+      const queryOk = !query || (row.dataset.searchText || '').toLowerCase().includes(query);
+      const show = statusOk && venueOk && queryOk;
+      row.hidden = !show;
+      if (show && row.tagName === 'TR') visible++;
+    });
+    $('boardSummary').textContent = `${visible}レース`;
+  }
+
+  function renderTicket() {
+    const coverage = selectedRace.data_coverage;
+    $('selectedVenueCode').textContent = selectedRace.venue_code;
+    $('selectedRaceName').textContent = `${selectedRace.venue_name} ${selectedRace.race_number}R`;
+    $('selectedDeadline').textContent = `締切 ${new Date(selectedRace.scheduled_deadline_at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}`;
+    $('selectedDecision').textContent = selectedRace.decision_label;
+    $('selectedDecision').className = decisionClass(selectedRace.decision_status);
+    $('selectedMaxStake').textContent = yen(selectedRace.max_stake_yen);
+    $('selectedExpectedReturn').textContent = expectedText(selectedRace.expected_return_per_100_yen);
+    $('selectedDataCount').textContent = `${coverage.obtained} / ${coverage.total}項目`;
+    $('selectedDataDetail').innerHTML = `<strong>${coverage.state_label}</strong><span>${coverage.missing_labels.length ? `未取得：${coverage.missing_labels.join('・')}` : '不足項目はありません'}</span>`;
+    $('ticketOdds').textContent = oddsText(selectedRace.current_odds);
+    $('stake').value = selectedRace.max_stake_yen || risk.minimum_stake_yen;
+
+    $('betOption').innerHTML = selectedRace.available_bet_options.length
+      ? selectedRace.available_bet_options.map(option => `<option value="${option.bet_type_code}|${option.combination}">${option.bet_type_label} ${option.combination}</option>`).join('')
+      : '<option value="">買い目なし</option>';
+
+    $('selectedReasons').innerHTML = selectedRace.decision_reasons.map(reason => `<div class="reason-item ${reason.tone}"><strong>${reason.title}</strong><span>${reason.detail}</span></div>`).join('');
+    $('chartLabel').textContent = `${selectedRace.recommended_bet.bet_type_label} ${selectedRace.recommended_bet.combination}`;
+    const labels = ['-20分','-10分','-5分','-2分','現在'];
+    $('oddsHistory').innerHTML = selectedRace.odds_history.length
+      ? selectedRace.odds_history.map((odds,index) => `<div class="odds-point"><span>${labels[index] || ''}</span><b>${oddsText(odds)}</b></div>`).join('')
+      : '<div class="coverage-note"><span>オッズ履歴を取得できていません。</span></div>';
+    $('chartCallout').innerHTML = selectedRace.odds_5_minutes_ago != null && selectedRace.current_odds != null
+      ? `<strong>5分前からの変化</strong><span>${oddsText(selectedRace.odds_5_minutes_ago)} → ${oddsText(selectedRace.current_odds)}</span>`
+      : '<strong>比較不可</strong><span>現在オッズまたは5分前オッズが不足しています。</span>';
+
+    $('selectedAvailabilityList').innerHTML = Object.entries(catalog).map(([code, definition]) => {
+      const available = selectedRace.data_availability[code] === true;
+      return `<div><span>${definition.label}${definition.critical ? '（重要）' : ''}</span><b class="${available ? 'ok' : 'missing'}">${available ? '取得済み' : '未取得'}</b></div>`;
+    }).join('');
+    $('coverageText').textContent = `必要 ${coverage.total}項目 / 取得済み ${coverage.obtained}項目 / 未取得 ${coverage.missing_labels.length}項目`;
+
+    document.querySelectorAll('.deadline-card').forEach(card => card.classList.toggle('selected', card.dataset.raceId === selectedRace.race_id));
+    $('confirmCheck').checked = false;
+    updateTicketAmounts();
+  }
+
+  function updateRisk() {
+    const remaining = Math.max(0, Number(risk.daily_limit_yen) - spentToday);
+    const percent = risk.daily_limit_yen > 0 ? Math.min(100, Math.round(spentToday / risk.daily_limit_yen * 100)) : 0;
+    $('spentValue').textContent = yen(spentToday);
+    $('remainingValue').textContent = yen(remaining);
+    $('riskPercent').textContent = `${percent}%`;
+    $('riskProgress').style.width = `${percent}%`;
+  }
+
+  function updateTicketAmounts() {
+    const stake = Number($('stake').value || 0);
+    const odds = Number(selectedRace.current_odds || 0);
+    const afterLimit = Number(risk.daily_limit_yen) - spentToday - stake;
+    $('estimatedPayout').textContent = odds > 0 ? yen(Math.floor(stake * odds)) : '—';
+    $('maxLoss').textContent = stake > 0 ? `−${yen(stake)}` : '—';
+    $('afterLimit').textContent = yen(Math.max(0, afterLimit));
+
+    let warning = '';
+    if (selectedRace.decision_status === 'skip') warning = 'このレースは見送りです。紙上投票も記録できません。';
+    else if (selectedRace.data_coverage.critical_missing_codes.length) warning = `重要データが不足しています：${selectedRace.data_coverage.critical_missing_labels.join('・')}`;
+    else if (!selectedOption()) warning = '買い目候補がありません。';
+    else if (stake < risk.minimum_stake_yen || stake % risk.stake_unit_yen !== 0) warning = `${yen(risk.minimum_stake_yen)}以上、${yen(risk.stake_unit_yen)}単位で入力してください。`;
+    else if (stake > selectedRace.max_stake_yen) warning = `このレースの上限 ${yen(selectedRace.max_stake_yen)} を超えています。`;
+    else if (afterLimit < 0) warning = '本日の上限を超えています。';
+
+    $('ticketWarning').hidden = !warning;
+    $('ticketWarning').textContent = warning;
+    $('paperVote').disabled = Boolean(warning) || !$('confirmCheck').checked || !risk.paper_betting_enabled;
+  }
+
+  function selectRace(raceId) {
+    const race = races.find(item => item.race_id === raceId);
+    if (!race) return;
+    selectedRace = race;
+    renderTicket();
+    if (innerWidth < 720) $('ticketPanel').classList.add('open');
+  }
+
+  function showToast(message) {
+    $('toast').textContent = message;
+    $('toast').classList.add('show');
+    setTimeout(() => $('toast').classList.remove('show'), 2200);
+  }
+
+  async function savePaperBet() {
+    const option = selectedOption();
+    const payload = {
+      race_id: selectedRace.race_id,
+      bet_type_code: option.bet_type_code,
+      combination: option.combination,
+      stake_yen: Number($('stake').value),
+      odds_at_record: selectedRace.current_odds,
+    };
+
+    if (!config.paperBetEndpoint) {
+      spentToday += payload.stake_yen;
+      prependLog(payload, new Date().toISOString());
+      return {spent_today_yen: spentToday};
+    }
+
+    const response = await fetch(config.paperBetEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRF-Token':config.csrfToken},
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.message || '保存できませんでした。');
+    spentToday = Number(result.spent_today_yen);
+    prependLog(payload, result.recorded_at);
+    return result;
+  }
+
+  function prependLog(payload, recordedAt) {
+    const option = selectedOption();
+    const log = $('paperLog');
+    if (log.classList.contains('empty-log')) { log.className = ''; log.innerHTML = ''; }
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `<strong>${selectedRace.venue_name} ${selectedRace.race_number}R / ${option.bet_type_label} ${option.combination} / ${yen(payload.stake_yen)}</strong><span>${new Date(recordedAt).toLocaleTimeString('ja-JP')}・オッズ ${oddsText(payload.odds_at_record)}・${data.site.model_version}</span>`;
+    log.prepend(entry);
+  }
+
+  document.querySelectorAll('[data-select-race]').forEach(button => button.addEventListener('click', () => selectRace(button.dataset.selectRace)));
+  document.querySelectorAll('[data-filter-status]').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-filter-status]').forEach(item => item.classList.remove('active'));
+    button.classList.add('active'); statusFilter = button.dataset.filterStatus; filterRows();
+  }));
+  document.querySelectorAll('[data-filter-venue]').forEach(card => card.addEventListener('click', () => {
+    venueFilter = venueFilter === card.dataset.filterVenue ? 'all' : card.dataset.filterVenue;
+    $('venueFilter').value = venueFilter;
+    document.querySelectorAll('[data-filter-venue]').forEach(item => item.classList.toggle('active', item.dataset.filterVenue === venueFilter));
+    filterRows();
+  }));
+  $('venueFilter').addEventListener('change', () => { venueFilter = $('venueFilter').value; filterRows(); });
+  $('raceSearch').addEventListener('input', filterRows);
+  $('stake').addEventListener('input', updateTicketAmounts);
+  $('betOption').addEventListener('change', updateTicketAmounts);
+  $('confirmCheck').addEventListener('change', updateTicketAmounts);
+  document.querySelectorAll('[data-amount]').forEach(button => button.addEventListener('click', () => { $('stake').value = button.dataset.amount; updateTicketAmounts(); }));
+  $('clearTicket').addEventListener('click', () => { $('stake').value = risk.minimum_stake_yen; $('confirmCheck').checked = false; updateTicketAmounts(); });
+  $('ticketPanel').querySelector('.ticket-heading').addEventListener('click', () => { if (innerWidth < 720) $('ticketPanel').classList.toggle('open'); });
+  $('paperVote').addEventListener('click', () => {
+    const option = selectedOption();
+    $('modalSummary').innerHTML = `<div><span>会場・レース</span><strong>${selectedRace.venue_name} ${selectedRace.race_number}R</strong></div><div><span>締切</span><strong>${new Date(selectedRace.scheduled_deadline_at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}</strong></div><div><span>買い目</span><strong>${option.bet_type_label} ${option.combination}</strong></div><div><span>金額</span><strong>${yen(Number($('stake').value))}</strong></div><div><span>記録時のオッズ</span><strong>${oddsText(selectedRace.current_odds)}</strong></div><div><span>必要データ</span><strong>${selectedRace.data_coverage.obtained}/${selectedRace.data_coverage.total}</strong></div>`;
+    $('confirmModal').hidden = false;
+  });
+  $('cancelVote').addEventListener('click', () => $('confirmModal').hidden = true);
+  $('confirmVote').addEventListener('click', async () => {
+    $('confirmVote').disabled = true;
+    try {
+      await savePaperBet();
+      updateRisk();
+      $('confirmModal').hidden = true;
+      $('confirmCheck').checked = false;
+      updateTicketAmounts();
+      showToast('紙上投票を記録しました');
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      $('confirmVote').disabled = false;
+    }
+  });
+
+  updateRisk();
+  filterRows();
+  renderTicket();
+  updateCountdowns();
+  setInterval(updateCountdowns, 1000);
+})();
+
+</script>
+</body>
+</html>
