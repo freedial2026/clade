@@ -838,6 +838,63 @@ def load_odds_observation(
     Give `observed_at` as an aware datetime; the caller decides the
     capture schedule.
     """
+    quotes = []
+    for entry in race_odds.entries:
+        combination = str(entry.lane_number)
+        quotes.append(("win", combination, entry.win_odds))
+        quotes.append(("place_low", combination, entry.place_odds_low))
+        quotes.append(("place_high", combination, entry.place_odds_high))
+    return _store_live_odds(
+        session,
+        venue_code,
+        race_date,
+        race_number,
+        quotes,
+        observed_at,
+        is_closing=race_odds.is_closing,
+    )
+
+
+def load_combination_odds_observation(
+    session: Session,
+    venue_code: str,
+    race_date: dt.date,
+    race_number: int,
+    race_odds,
+    observed_at: dt.datetime,
+) -> OddsLoadStats:
+    """Load one live 2連単/2連複 reading (`odds_source.parse_exacta_odds`).
+
+    Shares `_store_live_odds` with the win/place reading rather than
+    repeating it, so both pools land in `odds_snapshots` with identical
+    availability semantics -- which is the whole point of capturing the
+    second one. A cross-pool comparison between readings stored under
+    two different conventions would measure the conventions.
+    """
+    return _store_live_odds(
+        session,
+        venue_code,
+        race_date,
+        race_number,
+        [(e.bet_type, e.combination, e.odds) for e in race_odds.entries],
+        observed_at,
+        is_closing=race_odds.is_closing,
+    )
+
+
+def _store_live_odds(
+    session: Session,
+    venue_code: str,
+    race_date: dt.date,
+    race_number: int,
+    quotes,
+    observed_at: dt.datetime,
+    *,
+    is_closing: bool,
+) -> OddsLoadStats:
+    """Insert `(bet_type, combination, odds)` triples for one live
+    reading, skipping absent values and anything already stored at this
+    `observed_at`."""
     stats = OddsLoadStats()
     venue = _venue(session, venue_code)
     race = session.scalar(
@@ -852,40 +909,34 @@ def load_odds_observation(
         return stats
 
     source_id = _source_id(session, SOURCE_ODDS)
-    for entry in race_odds.entries:
-        combination = str(entry.lane_number)
-        for bet_type, value in (
-            ("win", entry.win_odds),
-            ("place_low", entry.place_odds_low),
-            ("place_high", entry.place_odds_high),
-        ):
-            if value is None:
-                stats.skipped_missing_value += 1
-                continue
-            existing = session.scalar(
-                select(OddsSnapshot).where(
-                    OddsSnapshot.race_id == race.id,
-                    OddsSnapshot.bet_type == bet_type,
-                    OddsSnapshot.combination == combination,
-                    OddsSnapshot.observed_at == observed_at,
-                )
+    for bet_type, combination, value in quotes:
+        if value is None:
+            stats.skipped_missing_value += 1
+            continue
+        existing = session.scalar(
+            select(OddsSnapshot).where(
+                OddsSnapshot.race_id == race.id,
+                OddsSnapshot.bet_type == bet_type,
+                OddsSnapshot.combination == combination,
+                OddsSnapshot.observed_at == observed_at,
             )
-            if existing is not None:
-                stats.skipped_already_observed += 1
-                continue
-            session.add(
-                OddsSnapshot(
-                    race_id=race.id,
-                    bet_type=bet_type,
-                    combination=combination,
-                    odds=value,
-                    observed_at=observed_at,
-                    available_at=observed_at,
-                    is_closing=race_odds.is_closing,
-                    source_id=source_id,
-                )
+        )
+        if existing is not None:
+            stats.skipped_already_observed += 1
+            continue
+        session.add(
+            OddsSnapshot(
+                race_id=race.id,
+                bet_type=bet_type,
+                combination=combination,
+                odds=value,
+                observed_at=observed_at,
+                available_at=observed_at,
+                is_closing=is_closing,
+                source_id=source_id,
             )
-            stats.snapshots += 1
+        )
+        stats.snapshots += 1
 
     return stats
 

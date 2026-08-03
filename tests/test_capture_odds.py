@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 from boat_prediction.db import capture_odds, loader
 from boat_prediction.db.capture_odds import DEFAULT_LEAD_MINUTES
 from boat_prediction.db.models import Base, OddsSnapshot, Race, Venue
-from boat_prediction.odds_source import RaceOdds, WinPlaceOdds
+from boat_prediction.odds_source import (
+    CombinationOdds,
+    RaceCombinationOdds,
+    RaceOdds,
+    WinPlaceOdds,
+)
 
 JST = loader.JST
 RACE_DATE = dt.date(2026, 6, 1)
@@ -48,6 +53,19 @@ def _parsed(is_closing: bool = False, win: float = 2.5) -> RaceOdds:
                 place_odds_low=1.1,
                 place_odds_high=1.4,
             ),
+        ),
+    )
+
+
+def _parsed_exacta() -> RaceCombinationOdds:
+    """Two combinations is enough: the grid parser has its own tests, and
+    these are about stamping and pacing."""
+    return RaceCombinationOdds(
+        is_closing=False,
+        entries=(
+            CombinationOdds(bet_type="exacta", combination="1-2", odds=1.8),
+            CombinationOdds(bet_type="exacta", combination="2-1", odds=8.2),
+            CombinationOdds(bet_type="quinella", combination="1-2", odds=2.0),
         ),
     )
 
@@ -399,6 +417,122 @@ class LoadOddsObservationTest(CaptureOddsTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptureWithExactaTest(CaptureOddsTestBase):
+    """`--with-exacta`: the second pool on the same race.
+
+    The point of capturing it is to compare `P(1着 = boat i)` read from
+    単勝 against the same quantity summed out of 2連単, so the property
+    that actually matters is that both readings describe the *same
+    moment*.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch(
+            "boat_prediction.db.capture_odds.parse_exacta_odds",
+            return_value=_parsed_exacta(),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _capture(self, opener, *, sleeps=None):
+        with Session(self.engine) as session:
+            result = capture_odds.capture_due_odds(
+                session,
+                now=DEADLINE - dt.timedelta(minutes=10),
+                race_date=RACE_DATE,
+                lead_minutes=(10,),
+                opener=opener,
+                sleeper=(sleeps.append if sleeps is not None else (lambda _: None)),
+                clock=_clock_at(DEADLINE - dt.timedelta(minutes=10)),
+                with_exacta=True,
+            )
+            session.commit()
+            return result
+
+    def test_off_by_default_so_the_existing_job_is_unchanged(self) -> None:
+        opener = FakeOpener()
+
+        with Session(self.engine) as session:
+            capture_odds.capture_due_odds(
+                session,
+                now=DEADLINE - dt.timedelta(minutes=10),
+                race_date=RACE_DATE,
+                lead_minutes=(10,),
+                opener=opener,
+                sleeper=lambda _: None,
+            )
+
+        self.assertEqual(len(opener.urls), 1)
+        self.assertIn("oddstf", opener.urls[0])
+
+    def test_fetches_the_exacta_page_as_well(self) -> None:
+        opener = FakeOpener()
+
+        result = self._capture(opener)
+
+        self.assertEqual(
+            opener.urls,
+            [
+                "https://www.boatrace.jp/owpc/pc/race/oddstf?rno=1&jcd=24&hd=20260601",
+                "https://www.boatrace.jp/owpc/pc/race/odds2tf?rno=1&jcd=24&hd=20260601",
+            ],
+        )
+        self.assertEqual(result.fetched, 1)
+        self.assertEqual(result.exacta_fetched, 1)
+
+    def test_both_pools_share_one_observed_at(self) -> None:
+        """Two stamps 3 s apart would leave every cross-pool comparison
+        with a 3 s window for the market to have moved in."""
+        self._capture(FakeOpener())
+
+        with Session(self.engine) as session:
+            stamps = set(session.scalars(select(OddsSnapshot.observed_at)))
+            types = set(session.scalars(select(OddsSnapshot.bet_type)))
+
+        self.assertEqual(len(stamps), 1)
+        self.assertEqual(types, {"win", "place_low", "place_high", "exacta", "quinella"})
+
+    def test_stores_the_combination_rows(self) -> None:
+        self._capture(FakeOpener())
+
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(OddsSnapshot.combination, OddsSnapshot.odds)
+                .where(OddsSnapshot.bet_type == "exacta")
+                .order_by(OddsSnapshot.combination)
+            ).all()
+
+        self.assertEqual([r[0] for r in rows], ["1-2", "2-1"])
+        self.assertEqual([float(r[1]) for r in rows], [1.8, 8.2])
+
+    def test_a_failing_exacta_page_keeps_the_win_reading(self) -> None:
+        class ExactaBrokenOpener(FakeOpener):
+            def urlopen(self, request, timeout=None):
+                if "odds2tf" in str(request):
+                    raise OSError("boom")
+                return super().urlopen(request, timeout=timeout)
+
+        result = self._capture(ExactaBrokenOpener())
+
+        self.assertEqual(result.fetched, 1)
+        self.assertEqual(result.exacta_fetched, 0)
+        self.assertEqual(len(result.failed), 1)
+        self.assertIn("2連単", result.failed[0][0])
+        with Session(self.engine) as session:
+            self.assertEqual(
+                session.query(OddsSnapshot).filter_by(bet_type="win").count(), 1
+            )
+
+    def test_the_extra_request_is_paced(self) -> None:
+        sleeps: list[float] = []
+
+        self._capture(FakeOpener(), sleeps=sleeps)
+
+        # One race, two pages: exactly one gap, and none after the last.
+        self.assertEqual(sleeps, [capture_odds.DEFAULT_REQUEST_DELAY_SECONDS])
 
 
 class LeadTimeBracketsPreviewTest(unittest.TestCase):

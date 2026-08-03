@@ -46,6 +46,19 @@ from .race_id import VALID_VENUE_CODES
 
 INDEX_URL = "https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
 ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/oddstf?rno={rno}&jcd={jcd}&hd={hd}"
+EXACTA_ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/odds2tf?rno={rno}&jcd={jcd}&hd={hd}"
+"""2連単 and 2連複, both rendered on one page.
+
+Captured for a reason the win/place page cannot serve: these are
+*separate pools* on the same race. `P(1着 = boat i)` can be read off the
+単勝 pool directly, and also recovered by summing the 30 2連単
+combinations that start with i. The two need not agree, and where they
+disagree one pool is stale -- which is the classic pari-mutuel
+inefficiency and the one thing this project has never been able to look
+at, since the archive keeps a single closing snapshot of 単勝 alone.
+
+One page yields both 2連単 and 2連複, so the second pool is free.
+"""
 _USER_AGENT = "boat-prediction-research/0.1 (non-commercial research project)"
 DEFAULT_REQUEST_DELAY_SECONDS = 3.0
 
@@ -74,16 +87,49 @@ class RaceOdds:
     entries: tuple[WinPlaceOdds, ...]
 
 
+EXACTA_BET_TYPE = "exacta"
+QUINELLA_BET_TYPE = "quinella"
+"""`odds_snapshots.bet_type` values for 2連単 and 2連複.
+
+English, matching the `win`/`place_low`/`place_high` already in that
+column, rather than the Japanese `２連単` that `race_payouts` uses. The
+two tables come from different sources and already disagree; making
+`odds_snapshots` internally consistent is worth more than making it
+match a table it is never joined to on this column.
+"""
+
+
+@dataclass(frozen=True)
+class CombinationOdds:
+    bet_type: str
+    combination: str
+    odds: float
+
+
+@dataclass(frozen=True)
+class RaceCombinationOdds:
+    is_closing: bool
+    entries: tuple[CombinationOdds, ...]
+
+
 def index_url(target_date: date) -> str:
     return INDEX_URL.format(hd=target_date.strftime("%Y%m%d"))
 
 
-def odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+def _race_url(template: str, target_date: date, venue_code: str, race_number: int) -> str:
     if venue_code not in VALID_VENUE_CODES:
         raise OddsSourceError(f"unknown venue_code: {venue_code!r}")
     if not 1 <= race_number <= 12:
         raise OddsSourceError(f"race_number out of range 1-12: {race_number!r}")
-    return ODDS_URL.format(rno=race_number, jcd=venue_code, hd=target_date.strftime("%Y%m%d"))
+    return template.format(rno=race_number, jcd=venue_code, hd=target_date.strftime("%Y%m%d"))
+
+
+def odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+    return _race_url(ODDS_URL, target_date, venue_code, race_number)
+
+
+def exacta_odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+    return _race_url(EXACTA_ODDS_URL, target_date, venue_code, race_number)
 
 
 def _fetch(url: str, opener: object | None) -> str:
@@ -122,6 +168,21 @@ def fetch_odds_page(
     is the caller that knows how many pages it is about to request.
     """
     return _fetch(odds_url(target_date, venue_code, race_number), opener=opener)
+
+
+def fetch_exacta_odds_page(
+    target_date: date,
+    venue_code: str,
+    race_number: int,
+    *,
+    opener: object | None = None,
+) -> str:
+    """Fetch one race's 2連単/2連複 page and return its raw HTML.
+
+    Same contract as `fetch_odds_page`, including that pacing is the
+    caller's business.
+    """
+    return _fetch(exacta_odds_url(target_date, venue_code, race_number), opener=opener)
 
 
 def fetch_racing_venues(target_date: date, *, opener: object | None = None) -> tuple[str, ...]:
@@ -218,6 +279,83 @@ def parse_win_place_odds(html: str) -> RaceOdds:
             )
         )
     return RaceOdds(is_closing=is_closing, entries=tuple(entries))
+
+
+def _combination_grid(soup: object, heading: str, bet_type: str) -> list[CombinationOdds]:
+    """Read one of the two grids on the 2連単/2連複 page.
+
+    Both are laid out the same way and the layout is worth stating,
+    because it is not a list of combinations: the header carries the six
+    *first-place* boats, and every body row holds six `(second boat,
+    odds)` pairs -- one per header column. So cell `2c` of a row is the
+    second boat for header column `c`, and cell `2c+1` is its price.
+
+    The first-place lane is read from the header rather than assumed to
+    be `c + 1`. On this page they coincide, but a 欠場 makes the
+    assumption a silent one-column shift, and nothing downstream could
+    detect a combination attributed to the wrong boat.
+
+    2連複's grid is triangular, with blanks above the diagonal; blanks
+    simply produce no entry, so the shape needs no special case. Its
+    combinations come out ascending (`1-2`, never `2-1`), matching how
+    `race_payouts` stores them.
+    """
+    node = soup.find("span", string=heading)
+    if node is None:
+        return []
+    table = node.find_next("table")
+    if table is None:
+        return []
+    head = table.find("thead")
+    body = table.find("tbody")
+    if head is None or body is None:
+        return []
+
+    head_cells = head.find_all(["td", "th"])
+    first_lanes: dict[int, int] = {}
+    for column in range(len(head_cells) // 2):
+        text = head_cells[column * 2].get_text(strip=True)
+        if text.isdigit():
+            first_lanes[column] = int(text)
+
+    entries: list[CombinationOdds] = []
+    for row in body.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        for column, first_lane in first_lanes.items():
+            if column * 2 + 1 >= len(cells):
+                continue
+            second_text = cells[column * 2].get_text(strip=True)
+            if not second_text.isdigit():
+                continue
+            value, _ = _parse_odds_cell(cells[column * 2 + 1].get_text(strip=True))
+            if value is None:
+                continue
+            entries.append(
+                CombinationOdds(
+                    bet_type=bet_type,
+                    combination=f"{first_lane}-{int(second_text)}",
+                    odds=value,
+                )
+            )
+    return entries
+
+
+def parse_exacta_odds(html: str) -> RaceCombinationOdds:
+    """Parse a fetched 2連単/2連複 page into per-combination odds.
+
+    Returns an empty `entries` tuple for the page shell a venue that did
+    not race renders -- the same failure mode that `beforeinfo_source`
+    records, where an empty page is indistinguishable from "no data
+    retained" unless the caller already knows the venue raced.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    entries = _combination_grid(soup, "2連単オッズ", EXACTA_BET_TYPE)
+    entries.extend(_combination_grid(soup, "2連複オッズ", QUINELLA_BET_TYPE))
+    return RaceCombinationOdds(
+        is_closing=CLOSING_ODDS_MARKER in html, entries=tuple(entries)
+    )
 
 
 def fetch_range(

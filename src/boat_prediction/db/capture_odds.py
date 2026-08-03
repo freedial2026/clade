@@ -32,11 +32,19 @@ Volume and site policy
 ----------------------
 
 A racing day is ~13 venues x 12 races, so one lead time costs ~150
-requests and the default two cost ~300 -- spread across the day, at the
-package's usual 3s spacing, never parallel. That is the same order as
+requests and the three defaults cost ~450 -- spread across the day, at
+the package's usual 3s spacing, never parallel. That is the same order as
 `odds_source.fetch_range`'s daily volume and far below the "large-volume
 access" the site's policy prohibits. Adding lead times multiplies it;
 keep the list short.
+
+`--with-exacta` fetches a second page per race and so doubles that, to
+~900 a day, or roughly 1.3 requests a minute averaged over the racing
+window. Why it is worth the doubling: 単勝 and 2連単 are *separate pools*
+on the same race, `P(1着 = boat i)` is readable from both, and where the
+two disagree one of them is stale. The archive cannot answer that -- it
+keeps one closing snapshot of 単勝 alone -- so, like the pre-deadline
+series itself, it can only be built forward.
 
 Prerequisite
 ------------
@@ -55,7 +63,13 @@ from time import sleep
 
 from sqlalchemy import select
 
-from ..odds_source import DEFAULT_REQUEST_DELAY_SECONDS, fetch_odds_page, parse_win_place_odds
+from ..odds_source import (
+    DEFAULT_REQUEST_DELAY_SECONDS,
+    fetch_exacta_odds_page,
+    fetch_odds_page,
+    parse_exacta_odds,
+    parse_win_place_odds,
+)
 from ..temporal import to_utc
 from . import loader
 from .loader import JST
@@ -100,12 +114,14 @@ class CaptureOddsError(ValueError):
 class CaptureResult:
     races_considered: int = 0
     fetched: int = 0
+    exacta_fetched: int = 0
     stats: loader.OddsLoadStats = field(default_factory=loader.OddsLoadStats)
     failed: list[tuple[str, str]] = field(default_factory=list)
 
     def __str__(self) -> str:
         return (
             f"races_considered={self.races_considered} fetched={self.fetched} "
+            f"exacta_fetched={self.exacta_fetched} "
             f"snapshots={self.stats.snapshots} "
             f"skipped_missing_value={self.stats.skipped_missing_value} "
             f"skipped_already_observed={self.stats.skipped_already_observed} "
@@ -202,12 +218,28 @@ def capture_due_odds(
     opener: object | None = None,
     sleeper=sleep,
     clock=None,
+    with_exacta: bool = False,
 ) -> CaptureResult:
     """Fetch and store every race that is due for capture right now.
 
     One race's failure does not stop the run -- a single unreachable page
     must not cost the rest of the day's captures, which cannot be
     retaken later.
+
+    `with_exacta` adds the 2連単/2連複 page, doubling the request count.
+    Both pages for one race are stamped with **one** `observed_at`, taken
+    before either fetch: the point of the second pool is to compare it
+    with the first, and two stamps 3 s apart would leave every comparison
+    with a 3 s window in which the market could have moved. The stamp is
+    therefore slightly early for the second page -- conservative in the
+    direction that matters, since `available_at` is what a leakage check
+    reads.
+
+    A round counts as done once *any* snapshot exists for it, so a race
+    whose win page succeeds and whose exacta page fails is not retried;
+    it is recorded in `failed` instead. That is deliberate -- the
+    alternative is per-bet-type round state, which is a lot of machinery
+    for a page that can simply be missing from a comparison.
     """
     if delay_seconds < 1.0:
         raise CaptureOddsError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
@@ -225,15 +257,16 @@ def capture_due_odds(
     result = CaptureResult(races_considered=considered)
 
     for index, race in enumerate(due):
+        label = f"{race.venue_code} {race.race_date} {race.race_number}R"
+        # Read the clock per race, not once per run: with 3s spacing a
+        # run's last race is fetched minutes after its first, and stamping
+        # them alike would misstate when each was available.
+        observed_at = to_utc(_as_aware_utc(clock()))
         try:
             html = fetch_odds_page(
                 race.race_date, race.venue_code, race.race_number, opener=opener
             )
             parsed = parse_win_place_odds(html)
-            # Read the clock per race, not once per run: with 3s spacing
-            # a run's last race is fetched minutes after its first, and
-            # stamping them alike would misstate when each was available.
-            observed_at = to_utc(_as_aware_utc(clock()))
             result.stats = result.stats.merge(
                 loader.load_odds_observation(
                     session,
@@ -246,9 +279,28 @@ def capture_due_odds(
             )
             result.fetched += 1
         except Exception as exc:  # noqa: BLE001 - record and keep capturing
-            result.failed.append(
-                (f"{race.venue_code} {race.race_date} {race.race_number}R", str(exc))
-            )
+            result.failed.append((label, str(exc)))
+
+        if with_exacta:
+            sleeper(delay_seconds)
+            try:
+                html = fetch_exacta_odds_page(
+                    race.race_date, race.venue_code, race.race_number, opener=opener
+                )
+                result.stats = result.stats.merge(
+                    loader.load_combination_odds_observation(
+                        session,
+                        race.venue_code,
+                        race.race_date,
+                        race.race_number,
+                        parse_exacta_odds(html),
+                        observed_at,
+                    )
+                )
+                result.exacta_fetched += 1
+            except Exception as exc:  # noqa: BLE001 - record and keep capturing
+                result.failed.append((f"{label} 2連単", str(exc)))
+
         if index < len(due) - 1:
             sleeper(delay_seconds)
 
@@ -278,6 +330,11 @@ def _main(argv: list[str] | None = None) -> int:
         help="how far from the target time a run still counts as that round",
     )
     parser.add_argument("--delay-seconds", type=float, default=DEFAULT_REQUEST_DELAY_SECONDS)
+    parser.add_argument(
+        "--with-exacta",
+        action="store_true",
+        help="also capture the 2連単/2連複 pool (one more page per race, doubling requests)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -314,6 +371,7 @@ def _main(argv: list[str] | None = None) -> int:
                 lead_minutes=tuple(args.lead_minutes),
                 tolerance_minutes=args.tolerance_minutes,
                 delay_seconds=args.delay_seconds,
+                with_exacta=args.with_exacta,
             )
             session.commit()
     finally:
