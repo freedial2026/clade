@@ -2330,3 +2330,105 @@ sharper and better-supported pattern in its place, and one that the
 already-running capture is positioned to test forward. Item 2 (odds
 movement, and the market's reaction to 直前情報 across the 60-minute
 bracket) waits on accumulation, as planned.
+
+## 期待値で選ぶ — 一度も試していなかった唯一の選択規則 (2026-08-03)
+
+Asked whether any other route to a positive return exists. Checking the
+record first turned up the answer to a different question: **every ROI
+figure this project has produced selected bets by the model's own
+probability**, never by price. "Back the argmax lane when it clears 0.70"
+finds likely winners; it has been measured repeatedly (0.910 → 0.924,
+plateauing, reversing at 0.90) and it never approached 1.0000, because
+the accuracy converts into shorter prices. `expected_value.py` existed
+since P2-T003 and had never been pointed at real rows.
+
+`db/evaluate_p2.py` (new) does it. `ev_i = p_i * o_i` is directly the
+expected return per unit staked, `Dataset` gained `race_ids` so a
+prediction can be settled at its own payout, and three rules run on the
+same races: `confidence` (the historical rule, for reference), `ev_best`,
+`ev_all`.
+
+Train 2023-01-01..2025-07-28 (143,299 races), test 2025-07-29..10-17
+(11,049 priced races) -- the only window with odds. **The `confidence`
+row reproduces the known figure (56.27% hit, ROI 0.9176), which is what
+says the settlement bookkeeping is right.**
+
+### 生の結果は信用できない
+
+| rule | thresh | bets | hit | ROI |
+|---|---|---|---|---|
+| confidence | 0.80 | 562 | 82.38% | 0.9270 |
+| ev_best | 1.0 | 8,368 | 20.69% | 1.1600 |
+| ev_best | 1.5 | 3,180 | 12.55% | 1.5025 |
+| ev_all | 1.5 | 4,436 | 12.24% | 1.5500 |
+
+ROI 1.55 against a 26.4% takeout is not believable, and it is not what
+it looks like. Four checks were run before reporting any of it:
+
+1. **Control** -- feed the same code the *market's own* implied
+   probabilities. `p_market * o` is identically 1/overround, so no bet
+   can clear EV 1.0. Result: max market EV seen 0.9613, zero bets, and
+   flat-betting all six returned **0.6747**, matching the known flat
+   portfolio figure. The harness settles correctly.
+2. **Odds attribution** -- for a winning bet, 単勝 payout must equal the
+   odds by definition. **10,871 of 11,049 agree** (the 178 are rounding
+   and refund cases). The prices are on the right boats.
+3. **Calibration** -- the model is well calibrated on the test set
+   (bin 0.0: 0.0436 predicted vs 0.0446 actual; bin 0.7: 0.7447 vs
+   0.7360). It is not producing nonsense probabilities in aggregate.
+4. **The tail** -- and here it breaks. Dropping the **20 largest payouts
+   of 4,472 bets (0.45%)** takes ROI from 1.5309 to **1.1071**. The
+   100x+ band shows ROI 3.18 on **8 hits out of 368 bets**.
+
+So the headline is carried by a handful of enormous longshot hits. The
+mechanism is plain once stated: a model probability of 1.5% on a 100x
+boat clears EV 1.5, and the calibration bins are far too coarse (0-10%
+holds 37,876 observations) to validate the model anywhere near 1-3%.
+
+### 残るものは、朝見つけた1号艇の効果
+
+Decomposed by lane, with the top ten payouts trimmed:
+
+| EV≥ | | bets | hits | ROI | 上位10除く |
+|---|---|---|---|---|---|
+| 1.0 | 1号艇 | 3,477 | 1,586 | 1.1557 | **1.1190** |
+| 1.0 | 2-6号艇 | 10,625 | 1,009 | 1.1110 | **0.9862** |
+| 1.2 | 1号艇 | 1,772 | 709 | 1.3210 | **1.2497** |
+| 1.2 | 2-6号艇 | 6,776 | 569 | 1.2573 | 1.0618 |
+| 1.5 | 1号艇 | 765 | 271 | 1.5557 | **1.3984** |
+| 1.5 | 2-6号艇 | 3,669 | 276 | 1.5456 | 1.1849 |
+
+**Lane 1 survives trimming; the other five largely do not.** Capping the
+odds at 30x barely moves the lane-1 rows (1.1471 / 1.3044 / 1.5178), so
+it is not a tail effect there either, and the hit counts are large
+(271-1,586) rather than a handful.
+
+This is the *same* phenomenon found this morning -- lane 1 is underpriced
+above about 3x -- but now expressed as a decision rule rather than a
+stratification, and with a threshold that trades bet count against edge.
+
+`TRIM_TOP_PAYOUTS` and `trimmed_roi` were added to the module afterwards
+so this check runs by default. A rule that reports only ROI hides exactly
+the failure that nearly got reported here.
+
+### 何が言えて、何が言えないか
+
+Says: **selecting on price rather than confidence is the mechanism that
+was missing**, and it had never been tried. Every previous ROI number in
+this project answered a different question.
+
+Does **not** say there is a profitable strategy:
+
+- The odds are archived **closing** prices. Nobody can bet at them. This
+  is not a detail -- it is the whole gap between this and a strategy.
+- One 80-day window, and it is the only window with odds, so there is no
+  out-of-sample test available in existing data.
+- Several thresholds were tried. The lane-1 result is monotone across
+  all of them, which is reassuring, but it was still chosen after
+  looking.
+- The durable part reduces to a single, already-known effect. Nothing
+  here found a *second* source of edge.
+
+The forward capture is the test, and it is now collecting everything it
+needs: pre-deadline odds at 60/10/2 minutes, the 直前情報 model's
+probabilities, and since today the 2連単/2連複 pool.

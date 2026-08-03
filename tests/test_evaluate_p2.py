@@ -350,3 +350,37 @@ class EvaluateP2Test(EvaluateP2TestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrimmedRoiTest(unittest.TestCase):
+    """`trimmed_roi` is what separated a real edge from a payout tail on
+    the first real run, so it needs its own arithmetic check."""
+
+    def _rule(self, payouts: list[float], bets: int) -> evaluate_p2.RuleResult:
+        rule = evaluate_p2.RuleResult("ev_all", 1.0)
+        rule.bets = bets
+        rule.staked = float(bets)
+        rule.hits = len(payouts)
+        rule.returned = sum(payouts)
+        rule.payouts = list(payouts)
+        return rule
+
+    def test_removes_the_largest_wins_and_their_stakes(self) -> None:
+        # 100 bets, one 200x hit and ten 1x hits. Raw ROI is carried by
+        # the single big one; trimmed must not be.
+        rule = self._rule([200.0] + [1.0] * 10, bets=100)
+
+        self.assertAlmostEqual(rule.roi, 210.0 / 100, places=6)
+        # The ten largest are 200 and nine 1s -> 209 removed, 10 stakes.
+        self.assertAlmostEqual(rule.trimmed_roi, (210.0 - 209.0) / 90, places=6)
+
+    def test_a_flat_rule_is_barely_moved_by_trimming(self) -> None:
+        rule = self._rule([2.0] * 50, bets=100)
+
+        self.assertAlmostEqual(rule.roi, 1.0, places=6)
+        self.assertAlmostEqual(rule.trimmed_roi, (100.0 - 20.0) / 90, places=6)
+
+    def test_too_few_bets_to_trim_reports_nan_rather_than_a_number(self) -> None:
+        rule = self._rule([5.0], bets=5)
+
+        self.assertNotEqual(rule.trimmed_roi, rule.trimmed_roi)  # nan

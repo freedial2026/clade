@@ -97,6 +97,19 @@ SELECT o.race_id,
 """
 
 
+TRIM_TOP_PAYOUTS = 10
+"""How many of the largest payouts `trimmed_roi` sets aside.
+
+Reported next to the raw ROI because the raw figure alone is misleading
+here in a way that is easy to miss: when a rule is free to back 100x
+boats, a handful of hits can carry the whole result. Measured on the
+first real run -- `ev_all` at threshold 1.5 returned 1.5309 over 4,472
+bets, and dropping the twenty largest payouts (0.45% of the bets) took
+it to 1.1071. A rule whose ROI collapses under this is reporting the
+tail, not an edge.
+"""
+
+
 @dataclass
 class RuleResult:
     rule: str
@@ -106,6 +119,7 @@ class RuleResult:
     hits: int = 0
     staked: float = 0.0
     returned: float = 0.0
+    payouts: list[float] = field(default_factory=list)
 
     @property
     def hit_rate(self) -> float:
@@ -115,11 +129,21 @@ class RuleResult:
     def roi(self) -> float:
         return self.returned / self.staked if self.staked else 0.0
 
+    @property
+    def trimmed_roi(self) -> float:
+        """ROI with the `TRIM_TOP_PAYOUTS` largest wins removed, stake and
+        all. `nan` when there are too few bets for the trim to mean
+        anything."""
+        if self.bets <= TRIM_TOP_PAYOUTS:
+            return float("nan")
+        top = sorted(self.payouts, reverse=True)[:TRIM_TOP_PAYOUTS]
+        return (self.returned - sum(top)) / (self.staked - len(top))
+
     def __str__(self) -> str:
         return (
             f"{self.rule:<10} thresh={self.threshold:<5} bets={self.bets:<7} "
             f"races={self.races:<6} hit={100 * self.hit_rate:5.2f}% "
-            f"ROI={self.roi:.4f}"
+            f"ROI={self.roi:.4f} trimmed={self.trimmed_roi:.4f}"
         )
 
 
@@ -170,6 +194,7 @@ def _settle(rule: RuleResult, lane: int, lanes: dict, winner: int) -> None:
     if lane == winner and payout is not None:
         rule.hits += 1
         rule.returned += payout
+        rule.payouts.append(payout)
 
 
 def evaluate_p2(
