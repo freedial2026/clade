@@ -21,12 +21,15 @@ from boat_prediction.db.models import (
     RaceEntry,
     RaceMeeting,
     Racer,
+    RacerPeriodCourseStats,
+    RacerPeriodStats,
     RaceResult,
     RaceResultEntry,
     Venue,
 )
 
 DEADLINE_HOUR = 8
+LANES_FOR_TEST = (1, 2, 3, 4, 5, 6)
 
 
 def _engine():
@@ -451,6 +454,249 @@ class MeetingFormAndPhaseTest(DatasetTestBase):
 
             self.assertEqual(data.phases, ["trial"])
             self.assertEqual(data.X[0][-1], 0.0)
+
+
+class RacerStatsBlockTest(DatasetTestBase):
+    """Per-course racer ability (`include_racer_stats`).
+
+    Two things here are silent if wrong: the point-in-time join can pick
+    a period that was not published yet, and the course join can attach a
+    racer's course-1 record to a boat that actually started from course 4.
+    Neither raises; both just produce a plausible wrong number.
+    """
+
+    DATE = dt.date(2026, 1, 5)
+
+    def _lane_slice(self, row: list[float], lane: int) -> list[float]:
+        width = len(dataset.FEATURE_NAMES) + len(dataset.RACER_STATS_FEATURE_NAMES)
+        start = (lane - 1) * width + len(dataset.FEATURE_NAMES)
+        return row[start : start + len(dataset.RACER_STATS_FEATURE_NAMES)]
+
+    def _add_period(
+        self,
+        session: Session,
+        racer,
+        *,
+        available_at: dt.datetime,
+        courses: dict[int, tuple[int, int]],
+        period=(2025, 2),
+    ) -> None:
+        """`courses` maps course number -> (entry_count, finish_1_count)."""
+        stats = RacerPeriodStats(
+            racer_id=racer.id,
+            period_year=period[0],
+            period_number=period[1],
+            available_at=available_at,
+        )
+        session.add(stats)
+        session.flush()
+        for course, (entries, wins) in courses.items():
+            session.add(
+                RacerPeriodCourseStats(
+                    racer_period_stats_id=stats.id,
+                    course_number=course,
+                    entry_count=entries,
+                    finish_1_count=wins,
+                )
+            )
+        session.flush()
+
+    def _build(self, session):
+        return dataset.build_dataset(
+            session,
+            start_date=self.DATE,
+            end_date=self.DATE,
+            include_racer_stats=True,
+        )
+
+    def test_appends_two_columns_per_lane_and_two_per_race(self) -> None:
+        with Session(self.engine) as session:
+            self._add_race(session, self.DATE, 1)
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 1)
+            # 6 lanes x (11 card + 2 racer) + phase + 2 race-level.
+            self.assertEqual(len(data.X[0]), 6 * 13 + 1 + 2)
+            self.assertEqual(len(data.feature_names), len(data.X[0]))
+            self.assertIn("lane1_course_win_shrunk", data.feature_names)
+            self.assertIn("field_a1_count", data.feature_names)
+            self.assertIn("field_win_rate_sd", data.feature_names)
+
+    def test_no_period_row_resolves_to_the_course_base_rate(self) -> None:
+        """A racer with no fan-file history is "no evidence", not a gap:
+        shrinkage with zero starts is exactly the prior."""
+        with Session(self.engine) as session:
+            self._add_race(session, self.DATE, 1)
+            session.commit()
+
+            data = self._build(session)
+
+            for lane in LANES_FOR_TEST:
+                shrunk, starts = self._lane_slice(data.X[0], lane)
+                self.assertEqual(starts, 0.0)
+                self.assertAlmostEqual(
+                    shrunk, dataset.COURSE_BASE_WIN_RATE[lane], places=9
+                )
+
+    def test_shrinks_a_small_sample_toward_the_prior(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            # 4 wins from 4 starts at course 1 -- a raw 100% that must not
+            # reach the model as 1.0.
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=30),
+                courses={1: (4, 4)},
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            shrunk, starts = self._lane_slice(data.X[0], 1)
+            self.assertEqual(starts, 4.0)
+            k = dataset.COURSE_SHRINKAGE_STARTS[1]
+            base = dataset.COURSE_BASE_WIN_RATE[1]
+            self.assertAlmostEqual(shrunk, (4 + k * base) / (4 + k), places=9)
+            self.assertLess(shrunk, 1.0)
+            self.assertGreater(shrunk, base)
+
+    def test_a_period_published_after_the_deadline_is_not_used(self) -> None:
+        """The leakage check. A fan file that lands after the race cannot
+        describe the racer at the time of it."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at + dt.timedelta(days=1),
+                courses={1: (20, 20)},
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            shrunk, starts = self._lane_slice(data.X[0], 1)
+            self.assertEqual(starts, 0.0)
+            self.assertAlmostEqual(shrunk, dataset.COURSE_BASE_WIN_RATE[1], places=9)
+
+    def test_the_latest_available_period_wins(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=400),
+                courses={1: (30, 0)},
+                period=(2024, 2),
+            )
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=30),
+                courses={1: (30, 30)},
+                period=(2025, 2),
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            shrunk, starts = self._lane_slice(data.X[0], 1)
+            self.assertEqual(starts, 30.0)
+            self.assertGreater(shrunk, dataset.COURSE_BASE_WIN_RATE[1])
+
+    def test_joins_on_the_course_actually_taken_not_the_lane(self) -> None:
+        """The reason this waited for 直前情報. Lane 1 starting from course
+        4 must be scored on their course-4 record."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=30),
+                courses={1: (20, 20), 4: (20, 0)},
+            )
+            self._add_before_info(session, race, courses={1: 4, 2: 1, 3: 3, 4: 2})
+            session.commit()
+
+            data = self._build(session)
+
+            shrunk, starts = self._lane_slice(data.X[0], 1)
+            self.assertEqual(starts, 20.0)
+            # Course 4's record (0 wins), not course 1's (20 wins).
+            k = dataset.COURSE_SHRINKAGE_STARTS[4]
+            base = dataset.COURSE_BASE_WIN_RATE[4]
+            self.assertAlmostEqual(shrunk, (0 + k * base) / (20 + k), places=9)
+
+    def test_falls_back_to_the_lane_when_there_is_no_beforeinfo(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=30),
+                courses={1: (20, 20)},
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            _shrunk, starts = self._lane_slice(data.X[0], 1)
+            self.assertEqual(starts, 20.0)
+
+    def test_field_globals_count_a1_and_measure_the_spread(self) -> None:
+        with Session(self.engine) as session:
+            self._add_race(session, self.DATE, 1)
+            session.commit()
+
+            data = self._build(session)
+
+            a1, sd = data.X[0][-2:]
+            # The fixture gives every lane A1 and an identical win rate.
+            self.assertEqual(a1, 6.0)
+            self.assertAlmostEqual(sd, 0.0, places=9)
+
+    def test_the_base_dataset_is_unchanged_when_the_block_is_off(self) -> None:
+        with Session(self.engine) as session:
+            self._add_race(session, self.DATE, 1)
+            session.commit()
+
+            data = dataset.build_dataset(
+                session, start_date=self.DATE, end_date=self.DATE
+            )
+
+            self.assertEqual(len(data.X[0]), 6 * 11 + 1)
+
+    def test_training_and_prediction_produce_the_same_block(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1, status="scheduled")
+            racer = session.query(Racer).order_by(Racer.registration_number).first()
+            self._add_period(
+                session,
+                racer,
+                available_at=race.scheduled_deadline_at - dt.timedelta(days=30),
+                courses={1: (12, 5)},
+            )
+            session.commit()
+
+            rows = dataset.build_prediction_rows(
+                session, race_date=self.DATE, include_racer_stats=True
+            )
+            session.query(Race).filter(Race.id == race.id).update({"status": "finished"})
+            session.commit()
+            data = self._build(session)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(rows.X[0], data.X[0])
+            self.assertEqual(rows.feature_names, data.feature_names)
 
 
 class BeforeInfoBlockTest(DatasetTestBase):

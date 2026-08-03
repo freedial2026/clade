@@ -171,7 +171,51 @@ BEFORE_INFO_FEATURE_NAMES = (
     "course_changed",
 )
 
+# Per-course racer ability, from `racer_period_course_stats`, appended
+# after the 直前情報 block when `include_racer_stats` is set.
+RACER_STATS_FEATURE_NAMES = (
+    "course_win_shrunk",
+    "course_starts",
+)
+
 GLOBAL_FEATURE_NAMES = ("is_standing_seeded",)
+
+# Appended once per race (not per lane) alongside `is_standing_seeded`
+# when `include_racer_stats` is set. Both are non-linear functions of the
+# card, which is the only reason they are worth materialising: a
+# multinomial logit already holds all six `national_win_rate` columns, so
+# anything it could form as a *linear* combination of them -- "this
+# racer minus the mean of the others", for one -- it already has.
+RACER_STATS_GLOBAL_NAMES = (
+    "field_a1_count",
+    "field_win_rate_sd",
+)
+
+COURSE_BASE_WIN_RATE = {
+    1: 0.5343, 2: 0.1482, 3: 0.1277, 4: 0.1127, 5: 0.0605, 6: 0.0203,
+}
+"""Win rate by 進入 course across all 225,111 populated
+`racer_period_course_stats` rows (2026-08-03). The prior a racer's own
+per-course record is shrunk toward."""
+
+COURSE_SHRINKAGE_STARTS = {
+    1: 7.7, 2: 27.0, 3: 28.0, 4: 31.0, 5: 45.6, 6: 48.0,
+}
+"""Empirical-Bayes shrinkage weight per course, in equivalent starts,
+measured by the beta-binomial method of moments over the same rows.
+
+Not a tuned constant -- it falls out of how much of the observed spread
+in per-course rates is real. A `(racer, period, course)` row averages
+**16.8 starts**, so at course 1 (53.4% base) 68.0% of the spread is
+signal and k is small, while at course 6 (2.0% base) only 26.2% is and
+k is nearly three times the sample size. Without this a racer with 0
+wins from 5 starts hands the model a literal zero.
+
+The measurement also showed shrinkage barely moves a *correlation*
+(0.6760 → 0.6717 at course 1), because correlation is scale-free and the
+start counts cluster tightly. It is the probability *level* this
+protects, which is what a model consumes.
+"""
 
 # A1 > A2 > B1 > B2 is an ordered grade, so it is encoded as an ordinal
 # rather than one-hot: the order is the information.
@@ -233,10 +277,18 @@ class Dataset:
         return len(self.y)
 
 
-def feature_columns(*, include_before_info: bool = False) -> list[str]:
-    names = FEATURE_NAMES + (BEFORE_INFO_FEATURE_NAMES if include_before_info else ())
+def feature_columns(
+    *, include_before_info: bool = False, include_racer_stats: bool = False
+) -> list[str]:
+    names = FEATURE_NAMES
+    if include_before_info:
+        names += BEFORE_INFO_FEATURE_NAMES
+    if include_racer_stats:
+        names += RACER_STATS_FEATURE_NAMES
     columns = [f"lane{lane}_{name}" for lane in LANES for name in names]
     columns.extend(GLOBAL_FEATURE_NAMES)
+    if include_racer_stats:
+        columns.extend(RACER_STATS_GLOBAL_NAMES)
     return columns
 
 
@@ -322,6 +374,79 @@ _BEFORE_INFO_JOIN = """
         AND bi.bi_rank = 1
 """
 
+# Per-course racer statistics, joined point-in-time.
+#
+# `racer_period_stats.available_at` is the application period's start, so
+# the row usable for a race is the latest one already available at its
+# deadline. That is expressed as a range join rather than a LATERAL
+# `ORDER BY ... LIMIT 1` per entry: `LEAD` over 40k period rows costs
+# nothing, while the LATERAL form would run once per entry row.
+#
+# **Joined on the course actually taken, not the lane.** The stats are
+# keyed by 進入; the card only gives 枠. They differ on 8.16% of boats,
+# and non-randomly -- 進入変更 happens exactly where course aptitude is
+# being contested. `start_exhibition_course` from 直前情報 is the only
+# pre-race observation of it, so this falls back to the lane only when
+# 直前情報 is absent.
+_RACER_STATS_CTE = """,
+racer_periods AS (
+    SELECT ps.id AS rp_id,
+           ps.racer_id AS rp_racer_id,
+           ps.available_at AS rp_from,
+           LEAD(ps.available_at) OVER (
+               PARTITION BY ps.racer_id ORDER BY ps.available_at
+           ) AS rp_until
+      FROM racer_period_stats ps
+),
+entry_course AS (
+    SELECT e.race_id AS ec_race_id,
+           e.lane_number AS ec_lane_number,
+           e.racer_id AS ec_racer_id,
+           r2.scheduled_deadline_at AS ec_deadline,
+           COALESCE((
+               SELECT bi2.start_exhibition_course
+                 FROM before_info_entries bi2
+                WHERE bi2.race_id = e.race_id
+                  AND bi2.lane_number = e.lane_number
+                  AND bi2.available_at <= r2.scheduled_deadline_at
+                  AND bi2.start_exhibition_course IS NOT NULL
+                ORDER BY bi2.observed_at
+                LIMIT 1
+           ), e.lane_number) AS ec_course
+      FROM race_entries e
+      JOIN races r2 ON r2.id = e.race_id
+     WHERE r2.race_date >= :meeting_window_start
+       AND r2.race_date <= :end_date
+),
+racer_course AS (
+    SELECT ec.ec_race_id AS rc_race_id,
+           ec.ec_lane_number AS rc_lane_number,
+           ec.ec_course AS rc_course,
+           cs.entry_count AS rc_entries,
+           cs.finish_1_count AS rc_wins
+      FROM entry_course ec
+      LEFT JOIN racer_periods rp
+             ON rp.rp_racer_id = ec.ec_racer_id
+            AND rp.rp_from <= ec.ec_deadline
+            AND (rp.rp_until IS NULL OR rp.rp_until > ec.ec_deadline)
+      LEFT JOIN racer_period_course_stats cs
+             ON cs.racer_period_stats_id = rp.rp_id
+            AND cs.course_number = ec.ec_course
+)
+"""
+
+_RACER_STATS_COLUMNS = """,
+       rc.rc_course,
+       rc.rc_entries,
+       rc.rc_wins
+"""
+
+_RACER_STATS_JOIN = """
+  LEFT JOIN racer_course rc
+         ON rc.rc_race_id = r.id
+        AND rc.rc_lane_number = e.lane_number
+"""
+
 _FEATURE_COLUMNS = """
 SELECT r.id AS race_id,
        r.race_date,
@@ -369,15 +494,18 @@ _FROM = """
 # to both for the same reason, rather than each assembling its own.
 
 
-def _row_sql(*, include_before_info: bool) -> str:
+def _row_sql(*, include_before_info: bool, include_racer_stats: bool = False) -> str:
     return (
         _MEETING_CTE
         + (_BEFORE_INFO_CTE if include_before_info else "")
+        + (_RACER_STATS_CTE if include_racer_stats else "")
         + _FEATURE_COLUMNS
         + (_BEFORE_INFO_COLUMNS if include_before_info else "")
+        + (_RACER_STATS_COLUMNS if include_racer_stats else "")
         + _TARGET_COLUMNS
         + _FROM
         + (_BEFORE_INFO_JOIN if include_before_info else "")
+        + (_RACER_STATS_JOIN if include_racer_stats else "")
         + """
  WHERE r.status = 'finished'
    AND r.race_date >= :start_date
@@ -388,14 +516,17 @@ def _row_sql(*, include_before_info: bool) -> str:
     )
 
 
-def _predict_sql(*, include_before_info: bool) -> str:
+def _predict_sql(*, include_before_info: bool, include_racer_stats: bool = False) -> str:
     return (
         _MEETING_CTE
         + (_BEFORE_INFO_CTE if include_before_info else "")
+        + (_RACER_STATS_CTE if include_racer_stats else "")
         + _FEATURE_COLUMNS
         + (_BEFORE_INFO_COLUMNS if include_before_info else "")
+        + (_RACER_STATS_COLUMNS if include_racer_stats else "")
         + _FROM
         + (_BEFORE_INFO_JOIN if include_before_info else "")
+        + (_RACER_STATS_JOIN if include_racer_stats else "")
         + """
  WHERE r.race_date = :race_date
    AND r.scheduled_deadline_at IS NOT NULL
@@ -466,6 +597,62 @@ def _z_scores(values: list[float | None]) -> list[float]:
     return [0.0 if v is None else (v - mean) / sd for v in values]
 
 
+def _racer_stats_lane(row) -> list[float]:
+    """One lane's per-course ability, empirical-Bayes shrunk.
+
+    Never returns None and never drops a race. A racer with no usable
+    period row -- one who debuted after the last fan file, or raced
+    before the parseable 2014 layout -- has zero starts, which the
+    shrinkage resolves to exactly the course's base rate. That is the
+    honest answer for "no evidence", and it is a real number rather than
+    a gap, so the feature is always defined.
+
+    `course_starts` rides alongside so the model can discount a rate
+    backed by five starts against one backed by fifty; without it the
+    shrunk value alone hides how much evidence is behind it.
+    """
+    course = int(row.rc_course) if row.rc_course is not None else None
+    base = COURSE_BASE_WIN_RATE.get(course)
+    if base is None:
+        # A course outside 1-6 should not exist; treat it as no evidence
+        # rather than guessing which prior applies.
+        return [0.0, 0.0]
+    k = COURSE_SHRINKAGE_STARTS[course]
+    starts = float(row.rc_entries or 0)
+    wins = float(row.rc_wins or 0)
+    return [(wins + k * base) / (starts + k), starts]
+
+
+def _racer_stats_globals(lane_rows: dict[int, object]) -> list[float]:
+    """The two per-race values, both deliberately non-linear.
+
+    A multinomial logit already carries all six `national_win_rate`
+    columns, so any *linear* combination of them -- a racer's gap to the
+    mean of the others, the field's total or average strength -- is
+    information it already has. Only the shapes it cannot form are worth
+    a column: a count over a categorical (`field_a1_count`) and a spread
+    (`field_win_rate_sd`, which needs squares).
+
+    Both were measured on 2026-08-03: an all-A1 race is the worst
+    composition to back the top racer in (return 0.6723 against 0.8432
+    for an all-B one), and the within-race spread moves the favourite's
+    hit rate 23.01% → 24.85% across terciles.
+    """
+    rates = [
+        float(r.listed_national_win_rate)
+        for r in lane_rows.values()
+        if r.listed_national_win_rate is not None
+    ]
+    a1 = sum(
+        1 for r in lane_rows.values() if (r.listed_class or "").strip() == "A1"
+    )
+    if len(rates) < 2:
+        return [float(a1), 0.0]
+    mean = sum(rates) / len(rates)
+    sd = (sum((v - mean) ** 2 for v in rates) / (len(rates) - 1)) ** 0.5
+    return [float(a1), sd]
+
+
 def _before_info_block(raw_by_lane: dict[int, object]) -> dict[int, list[float]] | None:
     """One race's 直前情報 block per lane, or None if the race lacks it.
 
@@ -511,6 +698,7 @@ def build_dataset(
     start_date: dt.date,
     end_date: dt.date,
     include_before_info: bool = False,
+    include_racer_stats: bool = False,
 ) -> Dataset:
     """Pull `[start_date, end_date]` into `(X, y, dates, phases)`.
 
@@ -536,6 +724,7 @@ def build_dataset(
     current_race = None
     lanes: dict[int, list[float] | None] = {}
     before_info: dict[int, object] = {}
+    lane_rows: dict[int, object] = {}
     race_date = None
     race_phase = "unknown"
     seeded = False
@@ -544,7 +733,7 @@ def build_dataset(
     too_late = False
 
     def flush() -> None:
-        nonlocal lanes, before_info, race_date, race_phase, seeded
+        nonlocal lanes, before_info, lane_rows, race_date, race_phase, seeded
         nonlocal winner_count, winner_lane, too_late
         if current_race is None:
             return
@@ -565,7 +754,11 @@ def build_dataset(
             for lane in LANES:
                 row.extend(lanes[lane])
                 row.extend(block.get(lane, ()))
+                if include_racer_stats:
+                    row.extend(_racer_stats_lane(lane_rows[lane]))
             row.append(1.0 if seeded else 0.0)
+            if include_racer_stats:
+                row.extend(_racer_stats_globals(lane_rows))
             X.append(row)
             y.append(int(winner_lane))
             dates.append(race_date)
@@ -574,11 +767,17 @@ def build_dataset(
             stats.races_used += 1
         lanes = {}
         before_info = {}
+        lane_rows = {}
         too_late = False
 
     meeting_window_start = start_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
     for row in session.execute(
-        text(_row_sql(include_before_info=include_before_info)),
+        text(
+            _row_sql(
+                include_before_info=include_before_info,
+                include_racer_stats=include_racer_stats,
+            )
+        ),
         {
             "start_date": start_date,
             "end_date": end_date,
@@ -597,6 +796,7 @@ def build_dataset(
             too_late = True
         lane_number = int(row.lane_number)
         lanes[lane_number] = _lane_features(row)
+        lane_rows[lane_number] = row
         if include_before_info:
             if row.bi_too_late:
                 too_late = True
@@ -614,7 +814,10 @@ def build_dataset(
         y=y,
         dates=dates,
         phases=phases,
-        feature_names=feature_columns(include_before_info=include_before_info),
+        feature_names=feature_columns(
+            include_before_info=include_before_info,
+            include_racer_stats=include_racer_stats,
+        ),
         stats=stats,
         race_ids=race_ids,
     )
@@ -651,7 +854,11 @@ class PredictionRows:
 
 
 def build_prediction_rows(
-    session: Session, *, race_date: dt.date, include_before_info: bool = False
+    session: Session,
+    *,
+    race_date: dt.date,
+    include_before_info: bool = False,
+    include_racer_stats: bool = False,
 ) -> PredictionRows:
     """Feature rows for one date's races, for races that have not run.
 
@@ -681,11 +888,12 @@ def build_prediction_rows(
     current_race = None
     lanes: dict[int, list[float] | None] = {}
     before_info: dict[int, object] = {}
+    lane_rows: dict[int, object] = {}
     seeded = False
     too_late = False
 
     def flush() -> None:
-        nonlocal lanes, before_info, too_late
+        nonlocal lanes, before_info, lane_rows, too_late
         if current_race is None:
             return
         stats.races_considered += 1
@@ -703,17 +911,27 @@ def build_prediction_rows(
             for lane in LANES:
                 row.extend(lanes[lane])
                 row.extend(block.get(lane, ()))
+                if include_racer_stats:
+                    row.extend(_racer_stats_lane(lane_rows[lane]))
             row.append(1.0 if seeded else 0.0)
+            if include_racer_stats:
+                row.extend(_racer_stats_globals(lane_rows))
             X.append(row)
             race_ids.append(current_race)
             stats.races_used += 1
         lanes = {}
         before_info = {}
+        lane_rows = {}
         too_late = False
 
     meeting_window_start = race_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
     for row in session.execute(
-        text(_predict_sql(include_before_info=include_before_info)),
+        text(
+            _predict_sql(
+                include_before_info=include_before_info,
+                include_racer_stats=include_racer_stats,
+            )
+        ),
         {
             "race_date": race_date,
             "end_date": race_date,
@@ -734,6 +952,7 @@ def build_prediction_rows(
             too_late = True
         lane_number = int(row.lane_number)
         lanes[lane_number] = _lane_features(row)
+        lane_rows[lane_number] = row
         if include_before_info:
             if row.bi_too_late:
                 too_late = True
@@ -744,6 +963,9 @@ def build_prediction_rows(
     return PredictionRows(
         race_ids=race_ids,
         X=X,
-        feature_names=feature_columns(include_before_info=include_before_info),
+        feature_names=feature_columns(
+            include_before_info=include_before_info,
+            include_racer_stats=include_racer_stats,
+        ),
         stats=stats,
     )
