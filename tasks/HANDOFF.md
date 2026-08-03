@@ -1845,3 +1845,81 @@ than assume the two line up.
 confidence" are largely the same races. They probably overlap heavily —
 the model should be more confident in calm water — so the two filters may
 not stack, and assuming they do would overstate any combined rule.
+
+## E30 fuel: exhibition times slowed 0.020 s; nothing else survives noise (2026-08-02)
+
+BOAT RACE振興会 rolled bioethanol-30 fuel out venue by venue from
+2026-04-09, **in step with each venue's motor replacement**, and stated
+that "競技内容への影響は確認されず、走行性能に問題もなかった" from prior
+testing. Staggered adoption makes that checkable: six venues switched on
+known April dates, the rest had not by 2026-08-01.
+
+Ethanol carries about two-thirds the energy of petrol, so the direction
+was stated before looking: **exhibition times should slow.**
+
+| metric | E30 change | control change | **DiD** |
+|---|---|---|---|
+| mean exhibition time | +0.0031 | −0.0170 | **+0.0201 s** |
+| lane-1 win rate | +0.33 pt | −0.65 pt | +0.99 pt |
+| lane-1 return | +0.0305 | +0.0194 | +0.0111 |
+
+**Only the first survives.** With 26,460 exhibition rows per arm and a
+~0.15 s spread, the DiD's SE is ≈0.0018 — so +0.0201 is about 11 SE.
+The other two are not established: lane-1 win rate has SE ≈1.6 pt against
+a 0.99 pt effect, and the return SE is ≈0.05 against 0.011. Both are
+inside noise, on ~4,000 races per arm.
+
+So boats are measurably slower and **nothing can yet be said about lane
+advantage or market pricing.** Against the promoter's claim: a 0.020 s
+slowdown is not a "走行性能の問題", so this is not a contradiction — but
+"影響は確認されず" is not literally true at measurement precision.
+
+**The fuel effect cannot be separated from the fleet effect, ever.** The
+rollout is tied to motor replacement at every venue by design, so the
+0.020 s is the combined effect of new fuel plus new motors and no design
+can attribute it further. Recorded in `venue_regimes.py`.
+
+### Two venue-copy claims checked
+
+Published prediction copy, checked for factual accuracy rather than for
+edge — today's pattern is that widely-read information is priced, so a
+correct claim is not a profitable one.
+
+**"江戸川の69号機がエース機として君臨、66号機が急上昇" — substantially
+correct.** Over the fleet in use since 2025-05, 60 motors with ≥100
+starts: **69 ranks 3rd (22.8% win) and 66 ranks 5th (21.6%)**, against a
+fleet median of 16.2% and a floor of 10.1%. "君臨" overstates it — 55
+(23.7%) and 56 (23.4%) are ahead — and at ~270 starts the SE is ~2.4 pt,
+so the **top ten are statistically indistinguishable**.
+
+**A trap inside that check, worth keeping.** The raw win-rate range across
+the fleet is 10.1–23.7%, i.e. 13.6 points, which reads as an enormous
+motor effect and appears to contradict the 2.4-point figure measured for
+motor 2連率 terciles. It does not: subtracting binomial noise
+(SE ≈ 2.4 pt at n≈270) leaves a true spread of roughly 1.8 pt sd. **The
+raw range overstates motor quality about fivefold**, and the two
+measurements agree once that is removed.
+
+**"びわこでE30後に舟足が二段化" — not supported.** The claim predicts a
+widening spread, which the earlier E30 measurement had not looked at: it
+measured the *mean* exhibition time and never the dispersion. Tested as a
+DiD on the within-race standard deviation of exhibition times:
+
+| group | before | after | change |
+|---|---|---|---|
+| E30 | 0.07147 | 0.05854 | −0.0129 |
+| control | 0.06998 | 0.06300 | −0.0070 |
+| **DiD** | | | **−0.00595** (SE ≈ 0.00767) |
+
+The spread **narrowed** rather than widened, and the effect is inside one
+SE. So: the mean fell, the dispersion did not move.
+
+In fairness the claim names 行き足 and 直線足 explicitly as things
+展示タイム does not capture — which also means **it cannot be falsified
+with public data**, and that is worth noticing about the claim rather
+than about the fuel.
+
+Not checked, for want of data: the 平和島/児島 renovation wind claim needs
+construction dates (a `venue_regimes` row would make it testable), and
+the "3-4 months in, motor differences emerge" claim is testable as
+dispersion against fleet age but was not run.
