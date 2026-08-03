@@ -431,13 +431,16 @@ deadline, so nothing in them supports a decision made *before* betting
 closes. That cannot be fixed retroactively — the pre-deadline series was
 never published — so it is being built forward from here.
 
-Three cron jobs, all through `scripts/cron_job.sh` (sources `.env`, uses
+Five cron jobs, all through `scripts/cron_job.sh` (sources `.env`, uses
 the venv, logs to `logs/cron-YYYYMM.log`, rotating monthly):
 
 | JST | Job | Why then |
 |---|---|---|
 | 06:30 | `ingest_daily card` | Before the day's first deadline; the earliest in the archive is 08:32. Without today's card there is no `scheduled_deadline_at` and capture does nothing. |
-| every 2 min, 08-21 | `capture_odds` | Captures each race 10 and 2 minutes before its deadline. A run with nothing due makes no request. |
+| 06:45 | `predict_daily` | After the card load, before the first deadline. Card features only, every race, once. No network access. |
+| even min, 08-21 | `capture_odds` | Captures each race 60, 10 and 2 minutes before its deadline. A run with nothing due makes no request. |
+| odd min, 08-21 | `capture_beforeinfo` | Once per race, 5-30 minutes out. Interleaves with the odds capture rather than firing alongside it. |
+| odd min, 08-21 | `predict_daily --role preview` | The 直前情報 model, ≤10 minutes out, only on races whose 直前情報 has arrived. Listed after the capture so a race is normally predicted in the same cycle it was captured; nothing depends on that ordering, since a race missed this cycle is picked up two minutes later. DB only. |
 | 02:00 | `ingest_daily results` | After the last race settles. Defaults to yesterday. |
 
 Volume: ~300 requests per racing day, 3 s apart, never parallel — the
@@ -603,6 +606,41 @@ than correcting a real one. Not applied to production; worth revisiting
 only if a future model (e.g. a tree ensemble) shows materially worse raw
 ECE, or with more calib_valid data / fewer bins / isotonic regression if
 this matters later.
+
+## 直前情報 model wired for daily use (2026-08-03)
+
+The block measured on 2026-08-01 (+1.43% log-loss, 26/26 folds) is now a
+second **frozen** model rather than a finding in a throwaway script.
+
+- `dataset.py`: `include_before_info` adds four columns per lane --
+  展示タイム z, 展示ST z, tilt, 進入変更 -- to both `build_dataset` and
+  `build_prediction_rows`, from shared SQL fragments so the two paths
+  cannot compute a feature differently. Optional because
+  `before_info_entries` starts 2023-05-01 and an always-on block would
+  silently discard the earlier training years.
+- `model_registry.py`: activations are scoped to a **role**. The card
+  model holds `default`, the 直前情報 model holds `preview`; retraining
+  one cannot displace the other, and cron names a role rather than a
+  version id that goes stale. Pre-role activation entries read as
+  `default`, so the registry already on .21 is unaffected.
+- `train_model.py --with-before-info` fits and freezes the second model,
+  refusing a window that predates the 直前情報 data instead of silently
+  dropping those races.
+- `predict_daily.py --role preview` predicts only races whose 直前情報 is
+  complete, at most 10 minutes out (matching the earlier `capture_odds`
+  lead, so a probability and a price exist at the same moment), once per
+  race. Whether to build the block is read from the registry entry, not
+  from a flag, so a model can't be applied to the wrong feature row.
+
+Measured on .21 before deploying: **180,243 of 180,442 finished races
+(99.89%) since 2023-05-01 carry a complete block**, and 2026-08-02 --
+the first full day of live capture -- reached 144/144. The generated
+PostgreSQL was checked against the real database (valid, `bi_too_late=0`,
+進入変更 on 6.4% of the day's lane rows).
+
+778 tests pass locally (25 new), quality gate green. **Not yet deployed**: the
+host tracks `origin/main`, so this needs a push, then `git pull`,
+`train_model --with-before-info`, and one crontab line.
 
 ## Next, in order
 

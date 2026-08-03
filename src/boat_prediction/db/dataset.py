@@ -69,6 +69,50 @@ on its own. The shrinkage constant is therefore never absent -- a race
 with zero prior starts still gets a defined feature, equal to the season
 prior.
 
+直前情報
+--------
+
+Optional, behind `include_before_info`, because it splits the data in
+two: `before_info_entries` starts on 2023-05-01 and a race before that
+has no block at all. A single always-on block would silently shrink the
+trainable window by two and a half years, so the base feature set stays
+as it was and this is a second, narrower one.
+
+Four per-lane values, the block measured on 2026-08-01 (tasks/HANDOFF.md
+-- +1.43% log-loss over the base features, winning 26 of 26 folds):
+
+- `exhibition_time_z` -- 展示タイム, z-scored within the race. The largest
+  single component by more than half, and the only *absolute* measure of
+  boat speed anywhere in the schema: everything else derives from a
+  finishing position, which is relative to the field and therefore blind
+  to anything common to all six crews. Lower is faster; the sign is left
+  raw rather than negated, since a linear model learns it either way.
+- `start_st_z` -- 展示ST, z-scored within the race. The weakest component
+  (+0.155%), kept because the components measured as very nearly
+  additive.
+- `tilt_angle` -- raw. Weakest of all and not established (22 of 26
+  folds); kept for the same additivity reason, not because it is proven.
+- `course_changed` -- 進入変更, the course actually taken differing from
+  the lane. Fires on 8.16% of boat rows and is the second-largest
+  component; nothing else in the schema can see it.
+
+**Z-scored within the race, and that is the point of the transform.** In
+a six-class problem a quantity shared by all six boats cannot change who
+wins, and the absolute level of an exhibition time is dominated by
+shared terms -- the venue, the day's water, how hard the field is
+pushing. Removing them leaves the only discriminating part.
+
+Availability is the fetch itself for a live capture and the race's own
+deadline for the backfill (`load_beforeinfo_archive`), so the same
+`available_at <= scheduled_deadline_at` check the card features get
+applies unchanged and is not a special case.
+
+A race is dropped unless all six lanes carry 展示タイム, tilt and 進入
+course -- 99.998% of races with any 直前情報 do. 展示ST is the exception:
+2.6% of races are missing at least one, and a lane without it takes the
+field mean (z = 0) rather than costing the whole race, which is the
+convention the ST-proxy measurement already used.
+
 Series phase
 ------------
 
@@ -117,6 +161,16 @@ FEATURE_NAMES = (
     "meeting_form_score",
 )
 
+# The 直前情報 block, appended to each lane's slice after the card fields
+# when `include_before_info` is set. See the module docstring for what
+# each one is and why the block is optional.
+BEFORE_INFO_FEATURE_NAMES = (
+    "exhibition_time_z",
+    "start_st_z",
+    "tilt_angle",
+    "course_changed",
+)
+
 GLOBAL_FEATURE_NAMES = ("is_standing_seeded",)
 
 # A1 > A2 > B1 > B2 is an ordered grade, so it is encoded as an ordinal
@@ -147,6 +201,7 @@ class DatasetStats:
     dropped_no_single_winner: int = 0
     dropped_missing_feature: int = 0
     dropped_late_feature: int = 0
+    dropped_missing_before_info: int = 0
     excluded_dates: list[dt.date] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -155,7 +210,8 @@ class DatasetStats:
             f"dropped_not_six_lanes={self.dropped_not_six_lanes} "
             f"dropped_no_single_winner={self.dropped_no_single_winner} "
             f"dropped_missing_feature={self.dropped_missing_feature} "
-            f"dropped_late_feature={self.dropped_late_feature}"
+            f"dropped_late_feature={self.dropped_late_feature} "
+            f"dropped_missing_before_info={self.dropped_missing_before_info}"
         )
 
 
@@ -172,8 +228,9 @@ class Dataset:
         return len(self.y)
 
 
-def feature_columns() -> list[str]:
-    columns = [f"lane{lane}_{name}" for lane in LANES for name in FEATURE_NAMES]
+def feature_columns(*, include_before_info: bool = False) -> list[str]:
+    names = FEATURE_NAMES + (BEFORE_INFO_FEATURE_NAMES if include_before_info else ())
+    columns = [f"lane{lane}_{name}" for lane in LANES for name in names]
     columns.extend(GLOBAL_FEATURE_NAMES)
     return columns
 
@@ -213,6 +270,53 @@ meeting_form AS (
 )
 """
 
+# Bounded by the same window the meeting CTE already binds rather than a
+# parameter of its own: it is 10 days wider than needed, which costs a few
+# unmatched rows and saves a bind that both call sites would have to keep
+# in step.
+#
+# `bi_rank` exists because the table's key is
+# `(race_id, lane_number, observed_at)` -- a second capture for the same
+# race is possible in the schema even though `load_before_info` refuses
+# to write one. Without it a duplicate would multiply rows and the lane
+# loop would silently keep whichever arrived last; with it the earliest
+# observation wins, deterministically.
+_BEFORE_INFO_CTE = """,
+before_info AS (
+    SELECT bi.race_id AS bi_race_id,
+           bi.lane_number AS bi_lane_number,
+           bi.exhibition_time_sec AS bi_exhibition_time,
+           bi.start_exhibition_st_sec AS bi_start_st,
+           bi.tilt_angle AS bi_tilt,
+           bi.start_exhibition_course AS bi_course,
+           CASE
+               WHEN bi.available_at > br.scheduled_deadline_at THEN 1 ELSE 0
+           END AS bi_too_late,
+           ROW_NUMBER() OVER (
+               PARTITION BY bi.race_id, bi.lane_number ORDER BY bi.observed_at
+           ) AS bi_rank
+      FROM before_info_entries bi
+      JOIN races br ON br.id = bi.race_id
+     WHERE br.race_date >= :meeting_window_start
+       AND br.race_date <= :end_date
+)
+"""
+
+_BEFORE_INFO_COLUMNS = """,
+       bi.bi_exhibition_time,
+       bi.bi_start_st,
+       bi.bi_tilt,
+       bi.bi_course,
+       bi.bi_too_late
+"""
+
+_BEFORE_INFO_JOIN = """
+  LEFT JOIN before_info bi
+         ON bi.bi_race_id = r.id
+        AND bi.bi_lane_number = e.lane_number
+        AND bi.bi_rank = 1
+"""
+
 _FEATURE_COLUMNS = """
 SELECT r.id AS race_id,
        r.race_date,
@@ -248,38 +352,52 @@ _FROM = """
 """
 
 # Training: finished races over a date range, with the target.
-_ROW_SQL = (
-    _MEETING_CTE
-    + _FEATURE_COLUMNS
-    + _TARGET_COLUMNS
-    + _FROM
-    + """
+#
+# Prediction: one date's races, no target and no `status` filter, because
+# the whole point is that these races have not run. Everything else --
+# the within-meeting form window, the 直前情報 block, the lane feature
+# computation, the available_at check against the deadline -- is built
+# from the *same* fragments as training, so the two cannot drift. That
+# mattered enough to be worth the composition: a feature computed one way
+# at fit time and another way at predict time is a defect that produces
+# no error, only wrong numbers. `include_before_info` is passed through
+# to both for the same reason, rather than each assembling its own.
+
+
+def _row_sql(*, include_before_info: bool) -> str:
+    return (
+        _MEETING_CTE
+        + (_BEFORE_INFO_CTE if include_before_info else "")
+        + _FEATURE_COLUMNS
+        + (_BEFORE_INFO_COLUMNS if include_before_info else "")
+        + _TARGET_COLUMNS
+        + _FROM
+        + (_BEFORE_INFO_JOIN if include_before_info else "")
+        + """
  WHERE r.status = 'finished'
    AND r.race_date >= :start_date
    AND r.race_date <= :end_date
    AND r.scheduled_deadline_at IS NOT NULL
  ORDER BY r.race_date, r.id, e.lane_number
 """
-)
+    )
 
-# Prediction: one date's races, no target and no `status` filter, because
-# the whole point is that these races have not run. Everything else --
-# the within-meeting form window, the lane feature computation, the
-# available_at check against the deadline -- is the *same* text as
-# training, so the two cannot drift. That mattered enough to be worth the
-# refactor: a feature computed one way at fit time and another way at
-# predict time is a defect that produces no error, only wrong numbers.
-_PREDICT_SQL = (
-    _MEETING_CTE
-    + _FEATURE_COLUMNS
-    + _FROM
-    + """
+
+def _predict_sql(*, include_before_info: bool) -> str:
+    return (
+        _MEETING_CTE
+        + (_BEFORE_INFO_CTE if include_before_info else "")
+        + _FEATURE_COLUMNS
+        + (_BEFORE_INFO_COLUMNS if include_before_info else "")
+        + _FROM
+        + (_BEFORE_INFO_JOIN if include_before_info else "")
+        + """
  WHERE r.race_date = :race_date
    AND r.scheduled_deadline_at IS NOT NULL
    AND r.status <> 'cancelled'
  ORDER BY r.id, e.lane_number
 """
-)
+    )
 
 
 def _lane_features(row) -> list[float] | None:
@@ -321,13 +439,84 @@ def _lane_features(row) -> list[float] | None:
     return [float(v) for v in values] + [rank, prior_starts, form_score]
 
 
+def _z_scores(values: list[float | None]) -> list[float]:
+    """Z-score across the lanes that have a value; a lane without one
+    takes the field mean (0.0).
+
+    Population sd over six values, not the sample sd -- these six *are*
+    the population the transform is removing shared terms from, and there
+    is no wider group being estimated.
+
+    A field where every boat recorded the same value has nothing to
+    discriminate, so a zero spread returns zeros rather than dividing by
+    it. Same for a field with fewer than two readings.
+    """
+    present = [v for v in values if v is not None]
+    if len(present) < 2:
+        return [0.0] * len(values)
+    mean = sum(present) / len(present)
+    sd = (sum((v - mean) ** 2 for v in present) / len(present)) ** 0.5
+    if sd <= 0:
+        return [0.0] * len(values)
+    return [0.0 if v is None else (v - mean) / sd for v in values]
+
+
+def _before_info_block(raw_by_lane: dict[int, object]) -> dict[int, list[float]] | None:
+    """One race's 直前情報 block per lane, or None if the race lacks it.
+
+    All six lanes must carry 展示タイム, tilt and 進入 course; the race is
+    dropped otherwise rather than imputed, on the same reasoning as the
+    card fields -- an invented value is indistinguishable from a real
+    reading to everything downstream. 展示ST is the documented exception
+    (see the module docstring): missing on 2.6% of races, and a lane
+    without one takes the field mean instead of costing the race.
+    """
+    if set(raw_by_lane) != set(LANES):
+        return None
+
+    times: list[float] = []
+    tilts: list[float] = []
+    courses: list[int] = []
+    starts: list[float | None] = []
+    for lane in LANES:
+        row = raw_by_lane[lane]
+        if row.bi_exhibition_time is None or row.bi_tilt is None or row.bi_course is None:
+            return None
+        times.append(float(row.bi_exhibition_time))
+        tilts.append(float(row.bi_tilt))
+        courses.append(int(row.bi_course))
+        starts.append(None if row.bi_start_st is None else float(row.bi_start_st))
+
+    time_z = _z_scores(times)
+    start_z = _z_scores(starts)
+    return {
+        lane: [
+            time_z[index],
+            start_z[index],
+            tilts[index],
+            1.0 if courses[index] != lane else 0.0,
+        ]
+        for index, lane in enumerate(LANES)
+    }
+
+
 def build_dataset(
-    session: Session, *, start_date: dt.date, end_date: dt.date
+    session: Session,
+    *,
+    start_date: dt.date,
+    end_date: dt.date,
+    include_before_info: bool = False,
 ) -> Dataset:
     """Pull `[start_date, end_date]` into `(X, y, dates, phases)`.
 
     Rows come back ordered by race date, which is what
     `walk_forward.generate_monthly_folds` expects to see.
+
+    `include_before_info` appends the 直前情報 block to each lane and
+    drops any race without it. Nothing before 2023-05-01 has it, so a
+    window that predates the backfill returns an empty dataset rather
+    than a quietly card-only one -- `dropped_missing_before_info` is what
+    says which happened.
     """
     if end_date < start_date:
         raise ValueError(f"end_date {end_date} precedes start_date {start_date}")
@@ -340,6 +529,7 @@ def build_dataset(
 
     current_race = None
     lanes: dict[int, list[float] | None] = {}
+    before_info: dict[int, object] = {}
     race_date = None
     race_phase = "unknown"
     seeded = False
@@ -348,10 +538,12 @@ def build_dataset(
     too_late = False
 
     def flush() -> None:
-        nonlocal lanes, race_date, race_phase, seeded, winner_count, winner_lane, too_late
+        nonlocal lanes, before_info, race_date, race_phase, seeded
+        nonlocal winner_count, winner_lane, too_late
         if current_race is None:
             return
         stats.races_considered += 1
+        block = _before_info_block(before_info) if include_before_info else {}
         if set(lanes) != set(LANES):
             stats.dropped_not_six_lanes += 1
         elif too_late:
@@ -360,10 +552,13 @@ def build_dataset(
             stats.dropped_no_single_winner += 1
         elif any(lanes[lane] is None for lane in LANES):
             stats.dropped_missing_feature += 1
+        elif block is None:
+            stats.dropped_missing_before_info += 1
         else:
             row: list[float] = []
             for lane in LANES:
                 row.extend(lanes[lane])
+                row.extend(block.get(lane, ()))
             row.append(1.0 if seeded else 0.0)
             X.append(row)
             y.append(int(winner_lane))
@@ -371,11 +566,12 @@ def build_dataset(
             phases.append(race_phase)
             stats.races_used += 1
         lanes = {}
+        before_info = {}
         too_late = False
 
     meeting_window_start = start_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
     for row in session.execute(
-        text(_ROW_SQL),
+        text(_row_sql(include_before_info=include_before_info)),
         {
             "start_date": start_date,
             "end_date": end_date,
@@ -392,7 +588,13 @@ def build_dataset(
             winner_lane = row.winner_lane
         if row.too_late:
             too_late = True
-        lanes[int(row.lane_number)] = _lane_features(row)
+        lane_number = int(row.lane_number)
+        lanes[lane_number] = _lane_features(row)
+        if include_before_info:
+            if row.bi_too_late:
+                too_late = True
+            if row.bi_exhibition_time is not None:
+                before_info[lane_number] = row
     flush()
 
     # SQLite hands DATE back as text where PostgreSQL gives a date, and
@@ -401,7 +603,12 @@ def build_dataset(
     dates = [dt.date.fromisoformat(d) if isinstance(d, str) else d for d in dates]
 
     return Dataset(
-        X=X, y=y, dates=dates, phases=phases, feature_names=feature_columns(), stats=stats
+        X=X,
+        y=y,
+        dates=dates,
+        phases=phases,
+        feature_names=feature_columns(include_before_info=include_before_info),
+        stats=stats,
     )
 
 
@@ -412,13 +619,15 @@ class PredictionStats:
     dropped_not_six_lanes: int = 0
     dropped_missing_feature: int = 0
     dropped_late_feature: int = 0
+    dropped_missing_before_info: int = 0
 
     def __str__(self) -> str:
         return (
             f"races_considered={self.races_considered} races_used={self.races_used} "
             f"dropped_not_six_lanes={self.dropped_not_six_lanes} "
             f"dropped_missing_feature={self.dropped_missing_feature} "
-            f"dropped_late_feature={self.dropped_late_feature}"
+            f"dropped_late_feature={self.dropped_late_feature} "
+            f"dropped_missing_before_info={self.dropped_missing_before_info}"
         )
 
 
@@ -433,19 +642,29 @@ class PredictionRows:
         return len(self.race_ids)
 
 
-def build_prediction_rows(session: Session, *, race_date: dt.date) -> PredictionRows:
+def build_prediction_rows(
+    session: Session, *, race_date: dt.date, include_before_info: bool = False
+) -> PredictionRows:
     """Feature rows for one date's races, for races that have not run.
 
     Same features, same within-meeting window and same `available_at`
-    check as `build_dataset` -- they are built from the same SQL text, so
-    a feature cannot be computed one way at fit time and another at
-    predict time.
+    check as `build_dataset` -- they are built from the same SQL
+    fragments, so a feature cannot be computed one way at fit time and
+    another at predict time. `include_before_info` must match the model
+    being applied, which is why `predict_daily` takes it from the
+    registry entry rather than from its own flag.
 
     Today's own earlier races contribute nothing to within-meeting form
     even though they appear in the window: they have no result rows yet,
     so their score is NULL and both `COUNT(score)` and `AVG(score)`
     ignore them. That is the same conservative bound
     `loader.results_available_at` sets, arrived at without a special case.
+
+    With `include_before_info`, a race whose 直前情報 has not been
+    published (or not yet captured) is dropped and counted, not predicted
+    from a partial block. That is what makes "only the races whose 直前情報
+    is in" a property of the data rather than a filter the caller has to
+    remember to apply.
     """
     stats = PredictionStats()
     race_ids: list = []
@@ -453,34 +672,40 @@ def build_prediction_rows(session: Session, *, race_date: dt.date) -> Prediction
 
     current_race = None
     lanes: dict[int, list[float] | None] = {}
+    before_info: dict[int, object] = {}
     seeded = False
     too_late = False
 
     def flush() -> None:
-        nonlocal lanes, too_late
+        nonlocal lanes, before_info, too_late
         if current_race is None:
             return
         stats.races_considered += 1
+        block = _before_info_block(before_info) if include_before_info else {}
         if set(lanes) != set(LANES):
             stats.dropped_not_six_lanes += 1
         elif too_late:
             stats.dropped_late_feature += 1
         elif any(lanes[lane] is None for lane in LANES):
             stats.dropped_missing_feature += 1
+        elif block is None:
+            stats.dropped_missing_before_info += 1
         else:
             row: list[float] = []
             for lane in LANES:
                 row.extend(lanes[lane])
+                row.extend(block.get(lane, ()))
             row.append(1.0 if seeded else 0.0)
             X.append(row)
             race_ids.append(current_race)
             stats.races_used += 1
         lanes = {}
+        before_info = {}
         too_late = False
 
     meeting_window_start = race_date - dt.timedelta(days=MEETING_WINDOW_MARGIN_DAYS)
     for row in session.execute(
-        text(_PREDICT_SQL),
+        text(_predict_sql(include_before_info=include_before_info)),
         {
             "race_date": race_date,
             "end_date": race_date,
@@ -499,9 +724,18 @@ def build_prediction_rows(session: Session, *, race_date: dt.date) -> Prediction
             seeded = is_standing_seeded(row.race_class)
         if row.too_late:
             too_late = True
-        lanes[int(row.lane_number)] = _lane_features(row)
+        lane_number = int(row.lane_number)
+        lanes[lane_number] = _lane_features(row)
+        if include_before_info:
+            if row.bi_too_late:
+                too_late = True
+            if row.bi_exhibition_time is not None:
+                before_info[lane_number] = row
     flush()
 
     return PredictionRows(
-        race_ids=race_ids, X=X, feature_names=feature_columns(), stats=stats
+        race_ids=race_ids,
+        X=X,
+        feature_names=feature_columns(include_before_info=include_before_info),
+        stats=stats,
     )

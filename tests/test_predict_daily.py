@@ -10,7 +10,10 @@ or by a model that had seen the future.
 from __future__ import annotations
 
 import datetime as dt
+import pickle
+import tempfile
 import unittest
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, event, select
@@ -19,13 +22,15 @@ from sqlalchemy.orm import Session
 from boat_prediction.db import loader
 from boat_prediction.db.models import (
     Base,
+    BeforeInfoEntry,
     Race,
     RaceEntry,
     RacePrediction,
     Racer,
 )
-from boat_prediction.db.predict_daily import predict_day
+from boat_prediction.db.predict_daily import load_active_model, predict_day
 from boat_prediction.db.session import create_session_factory  # noqa: F401
+from boat_prediction.model_registry import ModelRegistry
 
 JST = ZoneInfo("Asia/Tokyo")
 RACE_DATE = dt.date(2026, 8, 1)
@@ -49,13 +54,17 @@ class _ConstantModel:
     def __init__(self, row=None) -> None:
         self.row = row or [0.5, 0.2, 0.1, 0.1, 0.05, 0.05]
         self.calls = 0
+        self.last_X: list[list[float]] = []
 
     def predict_proba(self, X):
         self.calls += 1
+        self.last_X = [list(row) for row in X]
         return [list(self.row) for _ in X]
 
 
-def _make_race(session, *, deadline_hour: int, race_number: int) -> Race:
+def _make_race(
+    session, *, deadline_hour: int, race_number: int, deadline_minute: int = 0
+) -> Race:
     venue = loader._venue(session, "01")
     race = Race(
         venue_id=venue.id,
@@ -65,7 +74,12 @@ def _make_race(session, *, deadline_hour: int, race_number: int) -> Race:
         race_class="予選",
         race_class_label="予選",
         scheduled_deadline_at=dt.datetime(
-            RACE_DATE.year, RACE_DATE.month, RACE_DATE.day, deadline_hour, 0, tzinfo=JST
+            RACE_DATE.year,
+            RACE_DATE.month,
+            RACE_DATE.day,
+            deadline_hour,
+            deadline_minute,
+            tzinfo=JST,
         ).astimezone(dt.UTC),
     )
     session.add(race)
@@ -97,6 +111,25 @@ def _make_race(session, *, deadline_hour: int, race_number: int) -> Race:
         )
     session.flush()
     return race
+
+
+def _add_before_info(session, race: Race) -> None:
+    """A complete 直前情報 set for one race, twenty minutes out."""
+    observed = race.scheduled_deadline_at - dt.timedelta(minutes=20)
+    for lane in range(1, 7):
+        session.add(
+            BeforeInfoEntry(
+                race_id=race.id,
+                lane_number=lane,
+                exhibition_time_sec=6.70 + lane * 0.01,
+                start_exhibition_st_sec=0.15,
+                tilt_angle=-0.5,
+                start_exhibition_course=lane,
+                observed_at=observed,
+                available_at=observed,
+            )
+        )
+    session.flush()
 
 
 class PredictDayTest(unittest.TestCase):
@@ -242,6 +275,190 @@ class PredictDayTest(unittest.TestCase):
         columns = {c.name for c in RacePrediction.__table__.columns}
         for forbidden in ("bet", "stake", "decision", "selected", "skip_reason"):
             self.assertNotIn(forbidden, columns)
+
+
+class PredictDayPreviewTest(unittest.TestCase):
+    """The 直前情報 run: minutes before each deadline, only the races whose
+    直前情報 has arrived, each one predicted once.
+
+    `now` is 12:00 JST throughout, so a race at 12:05 is five minutes away
+    and one at 12:40 is forty.
+    """
+
+    def setUp(self) -> None:
+        self.engine = _engine()
+        self.session = Session(self.engine)
+        loader.ensure_reference_data(self.session)
+        self.now = dt.datetime(2026, 8, 1, 3, 0, tzinfo=dt.UTC)  # 12:00 JST
+
+    def tearDown(self) -> None:
+        self.session.close()
+        self.engine.dispose()
+
+    def _predict(self, model=None, **kwargs):
+        return predict_day(
+            self.session,
+            race_date=RACE_DATE,
+            model=model or _ConstantModel(),
+            model_version="preview_v1",
+            now=self.now,
+            include_before_info=True,
+            max_lead_minutes=10,
+            once_per_race=True,
+            **kwargs,
+        )
+
+    def test_predicts_only_the_race_whose_beforeinfo_has_arrived(self) -> None:
+        ready = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, ready)
+        _make_race(self.session, deadline_hour=12, deadline_minute=6, race_number=2)
+
+        stats = self._predict()
+
+        self.assertEqual(stats.races_predicted, 1)
+        self.assertEqual(stats.rows_written, 6)
+        predicted = set(self.session.scalars(select(RacePrediction.race_id)))
+        self.assertEqual(predicted, {ready.id})
+
+    def test_holds_a_race_that_is_still_beyond_the_lead(self) -> None:
+        """直前情報 is published well before the prediction is wanted, so
+        having it is not the same as being due."""
+        race = _make_race(self.session, deadline_hour=12, deadline_minute=40, race_number=1)
+        _add_before_info(self.session, race)
+
+        stats = self._predict()
+
+        self.assertEqual(stats.skipped_not_yet_due, 1)
+        self.assertEqual(stats.rows_written, 0)
+
+    def test_predicts_each_race_once_however_often_the_job_runs(self) -> None:
+        """直前情報 does not move after publication, so a second run would
+        re-record the same arithmetic on the same inputs."""
+        race = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, race)
+
+        first = self._predict()
+        second = predict_day(
+            self.session,
+            race_date=RACE_DATE,
+            model=_ConstantModel(),
+            model_version="preview_v1",
+            now=self.now + dt.timedelta(minutes=2),
+            include_before_info=True,
+            max_lead_minutes=10,
+            once_per_race=True,
+        )
+
+        self.assertEqual(first.races_predicted, 1)
+        self.assertEqual(second.races_predicted, 0)
+        self.assertEqual(second.skipped_already_predicted, 1)
+        self.assertEqual(len(list(self.session.scalars(select(RacePrediction)))), 6)
+
+    def test_a_later_run_still_picks_up_a_race_that_became_due(self) -> None:
+        near = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, near)
+        later = _make_race(self.session, deadline_hour=12, deadline_minute=20, race_number=2)
+        _add_before_info(self.session, later)
+
+        self._predict()
+        second = predict_day(
+            self.session,
+            race_date=RACE_DATE,
+            model=_ConstantModel(),
+            model_version="preview_v1",
+            now=self.now + dt.timedelta(minutes=12),
+            include_before_info=True,
+            max_lead_minutes=10,
+            once_per_race=True,
+        )
+
+        self.assertEqual(second.races_predicted, 1)
+        predicted = set(self.session.scalars(select(RacePrediction.race_id)))
+        self.assertEqual(predicted, {near.id, later.id})
+
+    def test_the_card_model_and_the_preview_model_coexist_on_one_race(self) -> None:
+        """Both records are wanted: the same race, predicted from the card
+        in the morning and from 直前情報 minutes out, settles against the
+        same result and so measures what the block is worth forward."""
+        race = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, race)
+
+        predict_day(
+            self.session,
+            race_date=RACE_DATE,
+            model=_ConstantModel(),
+            model_version="logistic_cards_20260731",
+            now=self.now - dt.timedelta(hours=5),
+        )
+        self._predict()
+
+        versions = set(self.session.scalars(select(RacePrediction.model_version)))
+        self.assertEqual(versions, {"logistic_cards_20260731", "preview_v1"})
+        self.assertEqual(len(list(self.session.scalars(select(RacePrediction)))), 12)
+
+    def test_the_model_is_handed_the_wider_feature_row(self) -> None:
+        """The mismatch this guards against writes no error: a model fit
+        with the block, scored on card-only rows."""
+        race = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, race)
+        model = _ConstantModel()
+
+        self._predict(model=model)
+
+        self.assertEqual(len(model.last_X), 1)
+        self.assertEqual(len(model.last_X[0]), 6 * 15 + 1)
+
+    def test_predicted_at_still_precedes_every_deadline(self) -> None:
+        race = _make_race(self.session, deadline_hour=12, deadline_minute=5, race_number=1)
+        _add_before_info(self.session, race)
+
+        self._predict()
+
+        rows = self.session.execute(
+            select(RacePrediction.predicted_at, Race.scheduled_deadline_at).join(
+                Race, Race.id == RacePrediction.race_id
+            )
+        ).all()
+        self.assertTrue(rows)
+        for predicted_at, deadline in rows:
+            self.assertLess(predicted_at, deadline)
+
+
+class LoadActiveModelTest(unittest.TestCase):
+    """`include_before_info` travels with the model, not with the caller."""
+
+    def _registry(self, tmp: Path, *, include_before_info: bool, role: str) -> Path:
+        artifact = tmp / f"{role}.pkl"
+        with open(artifact, "wb") as handle:
+            pickle.dump(_ConstantModel(), handle)
+        registry_path = tmp / "registry.json"
+        registry = ModelRegistry(registry_path)
+        registry.register(
+            f"model_{role}",
+            dataset_version="2023-05-01..2026-08-02",
+            feature_set_version="fs",
+            code_version="test",
+            parameters={"include_before_info": include_before_info},
+            calibration_version="none",
+            evaluation_metrics={},
+            artifact_path=artifact,
+        )
+        registry.activate(f"model_{role}", role=role)
+        return registry_path
+
+    def test_reports_the_feature_set_each_role_was_fit_on(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            tmp = Path(name)
+            registry_path = self._registry(tmp, include_before_info=False, role="default")
+            self._registry(tmp, include_before_info=True, role="preview")
+
+            _model, version, card_block = load_active_model(registry_path, "default")
+            self.assertEqual(version, "model_default")
+            self.assertFalse(card_block)
+
+            _model, version, preview_block = load_active_model(registry_path, "preview")
+            self.assertEqual(version, "model_preview")
+            self.assertTrue(preview_block)
 
 
 if __name__ == "__main__":

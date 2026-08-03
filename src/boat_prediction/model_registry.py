@@ -6,12 +6,24 @@ evaluation metrics — the lineage required by
 .claude/rules/09-ml-data-science.md ("Track dataset, features, code,
 model, calibration, and evaluation versions").
 
-Exactly one version can be "active" at a time (the last entry in the
-activation history), so a prediction always resolves unambiguously to
-one model version. Activating a new version records the previously
-active one, so `rollback()` can restore it. Model artifacts are
-checksummed (SHA-256) at registration time so a later mismatch
-(corrupted or swapped file) is detectable via `verify_artifact()`.
+Exactly one version is "active" per *role* (the last entry in that
+role's activation history), so a prediction always resolves
+unambiguously to one model version. Activating a new version records the
+previously active one for that role, so `rollback()` can restore it.
+Model artifacts are checksummed (SHA-256) at registration time so a
+later mismatch (corrupted or swapped file) is detectable via
+`verify_artifact()`.
+
+Roles exist because two models now run against the same day from
+different information: the card model predicts every race in the morning
+and the 直前情報 model predicts a subset again minutes before each
+deadline. They are not candidates for the same slot -- neither replaces
+the other, and retiring one must not silently promote the other -- so
+each has its own activation history and each cron line names its role
+rather than a version id that would go stale on the next retrain.
+
+Activations written before roles existed carry no `role` key and read
+back as `DEFAULT_ROLE`, which is what the card model already is.
 """
 
 from __future__ import annotations
@@ -22,6 +34,8 @@ from pathlib import Path
 
 from .checksums import sha256_file
 from .json_store import read_json_or_default, write_json
+
+DEFAULT_ROLE = "default"
 
 
 class ModelRegistryError(ValueError):
@@ -47,6 +61,7 @@ class ActivationRecord:
     version_id: str
     activated_at: str
     previous_version_id: str | None
+    role: str = DEFAULT_ROLE
 
 
 class ModelRegistry:
@@ -117,32 +132,60 @@ class ModelRegistry:
             return False
         return sha256_file(path) == entry.artifact_checksum
 
-    def activate(self, version_id: str, *, now: datetime | None = None) -> ActivationRecord:
+    def _activations_for(self, role: str) -> list[dict]:
+        """That role's activation history, oldest first.
+
+        `.get("role", DEFAULT_ROLE)` rather than `["role"]`: entries
+        written before roles existed have no such key and belong to the
+        default role.
+        """
+        return [a for a in self._activations if a.get("role", DEFAULT_ROLE) == role]
+
+    def activate(
+        self, version_id: str, *, role: str = DEFAULT_ROLE, now: datetime | None = None
+    ) -> ActivationRecord:
         if version_id not in self._versions:
             raise ModelRegistryError(f"cannot activate unknown version_id: {version_id}")
 
-        previous = self._activations[-1]["version_id"] if self._activations else None
+        history = self._activations_for(role)
+        previous = history[-1]["version_id"] if history else None
         record = ActivationRecord(
             version_id=version_id,
             activated_at=(now or datetime.now(UTC)).isoformat(),
             previous_version_id=previous,
+            role=role,
         )
         self._activations.append(asdict(record))
         self._save()
         return record
 
-    def get_active(self) -> ModelVersion:
-        if not self._activations:
-            raise ModelRegistryError("no version has been activated")
-        return self.get(self._activations[-1]["version_id"])
+    def get_active(self, role: str = DEFAULT_ROLE) -> ModelVersion:
+        history = self._activations_for(role)
+        if not history:
+            raise ModelRegistryError(f"no version has been activated for role {role!r}")
+        return self.get(history[-1]["version_id"])
 
-    def rollback(self, *, now: datetime | None = None) -> ModelVersion:
+    def active_roles(self) -> list[str]:
+        """Every role that has an active version, in first-activation
+        order -- so an operator can see what is deployed without reading
+        the JSON."""
+        roles: list[str] = []
+        for entry in self._activations:
+            role = entry.get("role", DEFAULT_ROLE)
+            if role not in roles:
+                roles.append(role)
+        return roles
+
+    def rollback(self, *, role: str = DEFAULT_ROLE, now: datetime | None = None) -> ModelVersion:
         """Reactivate the version that was active immediately before the
-        current one."""
-        if not self._activations:
-            raise ModelRegistryError("no version has been activated; nothing to roll back")
-        previous_id = self._activations[-1]["previous_version_id"]
+        current one, within this role."""
+        history = self._activations_for(role)
+        if not history:
+            raise ModelRegistryError(
+                f"no version has been activated for role {role!r}; nothing to roll back"
+            )
+        previous_id = history[-1]["previous_version_id"]
         if previous_id is None:
-            raise ModelRegistryError("no prior version to roll back to")
-        self.activate(previous_id, now=now)
-        return self.get_active()
+            raise ModelRegistryError(f"no prior version to roll back to for role {role!r}")
+        self.activate(previous_id, role=role, now=now)
+        return self.get_active(role)

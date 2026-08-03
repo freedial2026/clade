@@ -16,10 +16,11 @@ from sqlalchemy.orm import Session
 from boat_prediction.db import dataset, evaluate_p1
 from boat_prediction.db.models import (
     Base,
+    BeforeInfoEntry,
     Race,
     RaceEntry,
-    Racer,
     RaceMeeting,
+    Racer,
     RaceResult,
     RaceResultEntry,
     Venue,
@@ -127,6 +128,42 @@ class DatasetTestBase(unittest.TestCase):
             )
         session.flush()
         return race
+
+    def _add_before_info(
+        self,
+        session: Session,
+        race: Race,
+        *,
+        exhibition_times: dict[int, float | None] | None = None,
+        start_sts: dict[int, float | None] | None = None,
+        tilts: dict[int, float | None] | None = None,
+        courses: dict[int, int | None] | None = None,
+        lanes: tuple[int, ...] = (1, 2, 3, 4, 5, 6),
+        available_at: dt.datetime | None = None,
+        observed_at: dt.datetime | None = None,
+    ) -> None:
+        """One race's 直前情報, defaulting to a complete and plausible set.
+
+        Defaults give every lane a distinct exhibition time so a z-score
+        test has something to measure; a test that cares about one field
+        overrides only that field.
+        """
+        deadline = race.scheduled_deadline_at
+        observed = observed_at or (deadline - dt.timedelta(minutes=20))
+        for lane in lanes:
+            session.add(
+                BeforeInfoEntry(
+                    race_id=race.id,
+                    lane_number=lane,
+                    exhibition_time_sec=(exhibition_times or {}).get(lane, 6.70 + lane * 0.01),
+                    start_exhibition_st_sec=(start_sts or {}).get(lane, 0.15),
+                    tilt_angle=(tilts or {}).get(lane, -0.5),
+                    start_exhibition_course=(courses or {}).get(lane, lane),
+                    observed_at=observed,
+                    available_at=available_at or observed,
+                )
+            )
+        session.flush()
 
 
 class BuildDatasetTest(DatasetTestBase):
@@ -249,7 +286,7 @@ class MeetingFormAndPhaseTest(DatasetTestBase):
     mechanism itself, not just the shrinkage math.
     """
 
-    def _lane_value(self, data: "dataset.Dataset", lane: int, name: str) -> float:
+    def _lane_value(self, data: dataset.Dataset, lane: int, name: str) -> float:
         index = (lane - 1) * len(dataset.FEATURE_NAMES) + dataset.FEATURE_NAMES.index(name)
         return data.X[0][index]
 
@@ -414,6 +451,257 @@ class MeetingFormAndPhaseTest(DatasetTestBase):
 
             self.assertEqual(data.phases, ["trial"])
             self.assertEqual(data.X[0][-1], 0.0)
+
+
+class BeforeInfoBlockTest(DatasetTestBase):
+    """The 直前情報 block (`include_before_info`).
+
+    The failure this class is really guarding against is a silent one: a
+    block that lands on the wrong lane, or that is computed one way for
+    training and another for prediction, produces no error at all -- only
+    a model scoring numbers that do not mean what it was fit on. So the
+    lane-by-lane values are asserted, and the train and predict paths are
+    asserted to agree on the same race.
+    """
+
+    DATE = dt.date(2026, 1, 5)
+
+    def _lane_slice(self, row: list[float], lane: int) -> list[float]:
+        width = len(dataset.FEATURE_NAMES) + len(dataset.BEFORE_INFO_FEATURE_NAMES)
+        start = (lane - 1) * width + len(dataset.FEATURE_NAMES)
+        return row[start : start + len(dataset.BEFORE_INFO_FEATURE_NAMES)]
+
+    def _build(self, session, **kwargs):
+        return dataset.build_dataset(
+            session,
+            start_date=self.DATE,
+            end_date=self.DATE,
+            include_before_info=True,
+            **kwargs,
+        )
+
+    def test_appends_four_columns_per_lane_and_names_them(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(session, race)
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 1)
+            # 6 lanes x (11 card + 4 直前情報) + 1 shared phase column.
+            self.assertEqual(len(data.X[0]), 6 * 15 + 1)
+            self.assertEqual(len(data.feature_names), len(data.X[0]))
+            self.assertIn("lane1_exhibition_time_z", data.feature_names)
+            self.assertIn("lane6_course_changed", data.feature_names)
+
+    def test_the_base_dataset_is_unchanged_when_the_block_is_off(self) -> None:
+        """The block is opt-in; the card model's feature row must not move
+        under it, or the frozen card model would be reading shifted
+        columns."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(session, race)
+            session.commit()
+
+            data = dataset.build_dataset(
+                session, start_date=self.DATE, end_date=self.DATE
+            )
+
+            self.assertEqual(len(data.X[0]), 6 * 11 + 1)
+            self.assertEqual(data.stats.dropped_missing_before_info, 0)
+
+    def test_drops_a_race_with_no_beforeinfo_rather_than_predicting_without_it(self) -> None:
+        with Session(self.engine) as session:
+            self._add_race(session, self.DATE, 1)
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 0)
+            self.assertEqual(data.stats.dropped_missing_before_info, 1)
+
+    def test_drops_a_race_whose_beforeinfo_covers_only_some_lanes(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(session, race, lanes=(1, 2, 3))
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(data.stats.dropped_missing_before_info, 1)
+
+    def test_drops_a_race_missing_one_exhibition_time(self) -> None:
+        """A partial block is not filled in: an imputed exhibition time is
+        indistinguishable from a measured one downstream."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(session, race, exhibition_times={4: None})
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(data.stats.dropped_missing_before_info, 1)
+
+    def test_exhibition_time_is_z_scored_within_the_race(self) -> None:
+        """The transform that makes the feature discriminating: the level
+        is shared by all six boats and cannot change who wins."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            times = {1: 6.70, 2: 6.70, 3: 6.70, 4: 6.80, 5: 6.80, 6: 6.80}
+            self._add_before_info(session, race, exhibition_times=times)
+            session.commit()
+
+            data = self._build(session)
+
+            zs = [self._lane_slice(data.X[0], lane)[0] for lane in range(1, 7)]
+            self.assertAlmostEqual(sum(zs), 0.0, places=9)
+            # Three fast, three slow, one sd apart either side of the mean.
+            for lane in (1, 2, 3):
+                self.assertAlmostEqual(zs[lane - 1], -1.0, places=9)
+            for lane in (4, 5, 6):
+                self.assertAlmostEqual(zs[lane - 1], 1.0, places=9)
+
+    def test_an_identical_field_gives_zero_rather_than_dividing_by_zero(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(
+                session, race, exhibition_times=dict.fromkeys(range(1, 7), 6.75)
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 1)
+            for lane in range(1, 7):
+                self.assertEqual(self._lane_slice(data.X[0], lane)[0], 0.0)
+
+    def test_a_lane_without_a_start_st_takes_the_field_mean_and_keeps_the_race(self) -> None:
+        """展示ST is missing on 2.6% of races; the documented exception to
+        "drop rather than impute", because the block's value is carried by
+        展示タイム and losing the race costs more than a zero does."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(
+                session,
+                race,
+                start_sts={1: 0.10, 2: 0.20, 3: 0.15, 4: 0.15, 5: 0.15, 6: None},
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data.stats.dropped_missing_before_info, 0)
+            self.assertEqual(self._lane_slice(data.X[0], 6)[1], 0.0)
+            self.assertLess(self._lane_slice(data.X[0], 1)[1], 0.0)
+
+    def test_course_changed_fires_only_where_the_course_differs_from_the_lane(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            # A classic 進入変更: lane 4 takes the inside, lanes 1-3 shift out.
+            self._add_before_info(
+                session, race, courses={1: 2, 2: 3, 3: 4, 4: 1, 5: 5, 6: 6}
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            flags = [self._lane_slice(data.X[0], lane)[3] for lane in range(1, 7)]
+            self.assertEqual(flags, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
+
+    def test_tilt_is_carried_through_per_lane(self) -> None:
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(session, race, tilts={3: 1.5})
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(self._lane_slice(data.X[0], 3)[2], 1.5)
+            self.assertEqual(self._lane_slice(data.X[0], 1)[2], -0.5)
+
+    def test_excludes_beforeinfo_available_after_the_deadline(self) -> None:
+        """The same leakage rule the card features get. A 直前情報 row
+        stamped after the deadline did not exist when the bet closed."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            self._add_before_info(
+                session,
+                race,
+                available_at=race.scheduled_deadline_at + dt.timedelta(minutes=1),
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 0)
+            self.assertEqual(data.stats.dropped_late_feature, 1)
+
+    def test_a_second_observation_does_not_multiply_the_row(self) -> None:
+        """The table's key admits a re-capture even though the loader
+        refuses to write one. The earliest observation wins, and the race
+        still yields exactly one row."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1)
+            deadline = race.scheduled_deadline_at
+            self._add_before_info(
+                session,
+                race,
+                observed_at=deadline - dt.timedelta(minutes=25),
+                tilts=dict.fromkeys(range(1, 7), -0.5),
+            )
+            self._add_before_info(
+                session,
+                race,
+                observed_at=deadline - dt.timedelta(minutes=5),
+                tilts=dict.fromkeys(range(1, 7), 3.0),
+            )
+            session.commit()
+
+            data = self._build(session)
+
+            self.assertEqual(len(data), 1)
+            self.assertEqual(self._lane_slice(data.X[0], 1)[2], -0.5)
+
+    def test_training_and_prediction_produce_the_same_block(self) -> None:
+        """The invariant the shared SQL fragments exist to protect."""
+        with Session(self.engine) as session:
+            race = self._add_race(session, self.DATE, 1, status="scheduled")
+            self._add_before_info(
+                session, race, courses={1: 2, 2: 1, 3: 3, 4: 4, 5: 5, 6: 6}
+            )
+            session.commit()
+
+            rows = dataset.build_prediction_rows(
+                session, race_date=self.DATE, include_before_info=True
+            )
+            # The same race, now with the target, through the training path.
+            session.query(Race).filter(Race.id == race.id).update({"status": "finished"})
+            session.commit()
+            data = self._build(session)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(rows.X[0], data.X[0])
+            self.assertEqual(rows.feature_names, data.feature_names)
+
+    def test_prediction_rows_drop_a_race_whose_beforeinfo_has_not_arrived(self) -> None:
+        """What makes "only the races whose 直前情報 is in" a property of
+        the data rather than a filter the caller must remember."""
+        with Session(self.engine) as session:
+            ready = self._add_race(session, self.DATE, 1, status="scheduled")
+            self._add_before_info(session, ready)
+            self._add_race(session, self.DATE, 2, status="scheduled")
+            session.commit()
+
+            rows = dataset.build_prediction_rows(
+                session, race_date=self.DATE, include_before_info=True
+            )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows.race_ids[0], ready.id)
+            self.assertEqual(rows.stats.dropped_missing_before_info, 1)
 
 
 class EvaluateP1Test(DatasetTestBase):

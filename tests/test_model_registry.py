@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,7 +6,10 @@ from pathlib import Path
 from boat_prediction.model_registry import ModelRegistry, ModelRegistryError
 
 
-class ModelRegistryTest(unittest.TestCase):
+class RegistryFixture(unittest.TestCase):
+    """Shared setup only -- no tests, so a subclass adds cases rather than
+    re-running the ones above it."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -28,6 +32,8 @@ class ModelRegistryTest(unittest.TestCase):
             artifact_path=artifact,
         )
 
+
+class ModelRegistryTest(RegistryFixture):
     def test_register_computes_checksum_and_persists(self) -> None:
         registry = ModelRegistry(self.registry_path)
 
@@ -135,6 +141,78 @@ class ModelRegistryTest(unittest.TestCase):
 
         with self.assertRaises(ModelRegistryError):
             ModelRegistry(self.registry_path)
+
+
+class ModelRegistryRoleTest(RegistryFixture):
+    """Roles: the card model and the 直前情報 model are both deployed, and
+    neither is a candidate for the other's slot."""
+
+    def test_roles_hold_independent_active_versions(self) -> None:
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        self._register(registry, "v2", self.artifact_v2)
+
+        registry.activate("v1")
+        registry.activate("v2", role="preview")
+
+        self.assertEqual(registry.get_active().version_id, "v1")
+        self.assertEqual(registry.get_active("preview").version_id, "v2")
+
+    def test_activating_one_role_does_not_disturb_another(self) -> None:
+        """The failure this prevents: retraining the preview model
+        silently swapping the model that predicts every race."""
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        self._register(registry, "v2", self.artifact_v2)
+        registry.activate("v1")
+
+        registry.activate("v2", role="preview")
+
+        self.assertEqual(registry.get_active().version_id, "v1")
+
+    def test_an_unactivated_role_raises_rather_than_falling_back(self) -> None:
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        registry.activate("v1")
+
+        with self.assertRaises(ModelRegistryError):
+            registry.get_active("preview")
+
+    def test_rollback_is_scoped_to_its_own_role(self) -> None:
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        self._register(registry, "v2", self.artifact_v2)
+        registry.activate("v1", role="preview")
+        registry.activate("v2", role="preview")
+        registry.activate("v1")
+
+        restored = registry.rollback(role="preview")
+
+        self.assertEqual(restored.version_id, "v1")
+        self.assertEqual(registry.get_active().version_id, "v1")
+
+    def test_an_activation_written_before_roles_existed_reads_as_default(self) -> None:
+        """Backwards compatibility with the registry already on the host,
+        whose single activation entry carries no `role` key."""
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        registry.activate("v1")
+
+        data = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        for entry in data["activations"]:
+            entry.pop("role")
+        self.registry_path.write_text(json.dumps(data), encoding="utf-8")
+
+        self.assertEqual(ModelRegistry(self.registry_path).get_active().version_id, "v1")
+
+    def test_active_roles_lists_what_is_deployed(self) -> None:
+        registry = ModelRegistry(self.registry_path)
+        self._register(registry, "v1", self.artifact_v1)
+        self._register(registry, "v2", self.artifact_v2)
+        registry.activate("v1")
+        registry.activate("v2", role="preview")
+
+        self.assertEqual(registry.active_roles(), ["default", "preview"])
 
 
 if __name__ == "__main__":
