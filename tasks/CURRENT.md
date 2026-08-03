@@ -793,27 +793,25 @@ tasks/HANDOFF.md for the evidence behind each line.
    closing prices, and no out-of-sample data exists — the forward
    capture is the only available test. Still the only thing measured
    anywhere in this project that cleared 1.0000.
-3. **Wire the per-course stats into the dataset** — tables, loader and
-   data are **deployed and loaded on .21** (2026-08-01): migration
-   `aa3047500d13`, 40,204 period rows / 241,224 course rows over 25
-   periods, `available_at` 2014-07-01 .. 2026-07-01. **Nothing reads them
-   yet**, and `dataset.py` is the only path into a model, so that is
-   literal. The lane-vs-course approximation is no longer needed: item 1
-   landed, so 直前情報's start-exhibition course gives the actual 進入.
+3. ~~**Wire the per-course stats into the dataset**~~ — **done
+   2026-08-03.** `dataset.include_racer_stats` joins
+   `racer_period_course_stats` on the course actually taken
+   (`start_exhibition_course`, falling back to the lane), point-in-time
+   against `available_at`, empirical-Bayes shrunk with measured
+   per-course constants (k = 7.7 .. 48.0). Two per-lane columns plus
+   `field_a1_count` / `field_win_rate_sd`.
 
-   **Now has measured justification (2026-08-03).** Per-course ability
-   survives removing the racer's own 全国勝率 — the residual persists at
-   r = 0.31 (course 1) down to 0.15, n ≈ 34,000 per course. So the card
-   does not already encode it. Design settled by the same measurement:
-   (racer, period, course) averages **16.8 starts**, so empirical-Bayes
-   shrinkage is mandatory, with k = 7.7 / 27.0 / 28.0 / 31.0 / 45.6 /
-   48.0 by course (signal share 68.0% → 26.2%). Build the feature as
-   shrunk level **plus** the residual-after-overall-skill, which is the
-   part that is actually new.
+   Result: **+0.574% log-loss alone, +1.503% with 直前情報** (sub-additive,
+   both read 進入) — real information, matching the residual persistence
+   measured before building it. But it **costs 0.8–1.1 ROI points under
+   confidence selection** (0.9227 → 0.9145 → 0.9117) while *improving*
+   EV selection (`ev_best` @1.5: 1.5025 → 1.6879, tail-trimmed 1.2541).
+   See tasks/HANDOFF.md for why that is coherent rather than
+   contradictory.
 
-   Also outstanding: a proper `db/load_fan_archive.py` CLI — the load was
-   run from a one-off script, which is fine for 25 idempotent files but
-   not for the twice-yearly refresh.
+   Still outstanding: a proper `db/load_fan_archive.py` CLI — the load
+   was run from a one-off script, fine for 25 idempotent files but not
+   for the twice-yearly refresh.
 4. **`db/evaluate_p2.py` + `Dataset.race_ids`** — promote the throwaway
    payout-settled evaluation into the repo. Log-loss and ROI were shown
    to disagree, so both belong in the standard runner.

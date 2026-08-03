@@ -2597,3 +2597,81 @@ widen to match.
 
 All of this is computed from the card, which is public, so it is not
 private information -- it is a pricing error the crowd leaves in place.
+
+## コース別成績を実装：確信度規則には毒、EV規則には薬 (2026-08-03)
+
+`racer_period_course_stats` now has a reader. Joined on the course
+actually taken (`start_exhibition_course` from 直前情報, falling back to
+the lane), point-in-time against `available_at`, and empirical-Bayes
+shrunk with the per-course constants measured earlier the same day.
+
+Two per-lane columns (`course_win_shrunk`, `course_starts`) and two
+race-level ones (`field_a1_count`, `field_win_rate_sd`). Deliberately
+**not** added: a "gap to the field" column. A multinomial logit already
+holds all six `national_win_rate` columns, so any linear combination of
+them -- which that gap is -- it already has, and it gets a per-lane
+coefficient so it can already express the lane-dependence the
+2026-08-03 measurement found. Only shapes it cannot form are worth a
+column: a count over a categorical, and a spread.
+
+### 情報としては本物、金にはならない
+
+Train 2023-05-01..2025-07-28 (124,835 races), test on the odds window
+(11,997 races), backing the argmax lane at real 単勝 payouts:
+
+| 変種 | log-loss | 改善 | 的中率 | 回収率 |
+|---|---|---|---|---|
+| カードのみ | 1.21317 | — | 56.44% | **0.9227** |
+| +直前情報 | 1.19781 | +1.266% | 56.54% | **0.9227** |
+| +コース別成績 | 1.20621 | **+0.574%** | 56.46% | 0.9145 |
+| +両方 | 1.19493 | **+1.503%** | 56.46% | 0.9117 |
+
+**The block carries real information** -- +0.574% alone, about 45% of
+what 直前情報 gives, which is consistent with the residual persistence
+(0.15-0.31) measured before building it. Combined they are *sub*-additive
+(1.503% against 1.840% summed) because both read 進入.
+
+**And it costs 0.8-1.1 points of return.** The hit rate does not move
+(56.44 → 56.46), so the model picks the same winners and they pay less.
+That is above the 0.002 noise floor by 4x. Fifth time this pattern has
+appeared, and the first time the effect is *negative* rather than flat.
+
+### ところが EV 規則では逆に効く
+
+Same features through `evaluate_p2` (both blocks on):
+
+| rule | thresh | bets | hit | ROI | 上位10除く |
+|---|---|---|---|---|---|
+| confidence | 0.00 | 11,049 | 56.54% | 0.9118 | 0.9041 |
+| confidence | 0.80 | 772 | 83.29% | 0.9412 | 0.9240 |
+| ev_best | 1.20 | 5,191 | 18.42% | 1.3720 | 1.1362 |
+| ev_best | 1.50 | 2,819 | 15.01% | **1.6879** | **1.2541** |
+| ev_all | 1.20 | 7,609 | 17.05% | 1.3694 | 1.1962 |
+| ev_all | 1.50 | 3,890 | 14.34% | 1.6793 | **1.3499** |
+
+Against the card-only run earlier the same day, `ev_best` at threshold
+1.5 goes **1.5025 → 1.6879**, and the tail-trimmed figure -- the one that
+survived scrutiny -- goes from 1.1849/1.3984 (other lanes / lane 1) to
+**1.2541** overall.
+
+**The two rules move in opposite directions on the same features, and
+that is coherent rather than contradictory.** Confidence selection asks
+"who wins" and a better answer just walks you toward shorter prices --
+the mechanism this project has measured five times. EV selection asks
+"who is underpriced", and a better probability makes that comparison
+sharper. Sharper probabilities are worth nothing to the first question
+and something to the second.
+
+### まだ戦略ではない
+
+Unchanged, and it is the whole gap: these are **closing** odds nobody can
+bet at, one 80-day window that is the only one with odds so there is no
+out-of-sample, and thresholds chosen after looking. The earlier
+decomposition also showed most of the durable part is the lane-1 effect
+rather than a second independent source of edge; that has not been
+re-decomposed with the new features.
+
+What it does establish is narrower and still useful: **feature work is
+not dead, it was being scored against the wrong rule.** Every previous
+"this feature is priced in" verdict was reached by measuring it with
+confidence selection.
