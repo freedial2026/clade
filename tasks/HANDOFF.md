@@ -1923,3 +1923,100 @@ Not checked, for want of data: the 平和島/児島 renovation wind claim needs
 construction dates (a `venue_regimes` row would make it testable), and
 the "3-4 months in, motor differences emerge" claim is testable as
 dispersion against fleet age but was not run.
+
+## The 直前情報 model is deployed and predicting daily (2026-08-03)
+
+The block measured on 2026-08-01 was a finding in a script. It is now a
+second frozen model, running alongside the card model on the same races.
+
+### What was built
+
+`dataset.include_before_info` adds four columns per lane -- 展示タイム
+z-scored within the race, 展示ST likewise, tilt, 進入変更 -- to *both*
+`build_dataset` and `build_prediction_rows`, assembled from shared SQL
+fragments. The fragments are the point: a feature computed one way at fit
+time and another at predict time raises nothing, it just makes the model
+score numbers that do not mean what it was fit on. A test asserts the two
+paths return an identical row for the same race.
+
+**Optional rather than always-on.** `before_info_entries` begins
+2023-05-01, so one always-on feature set would have to throw away two and
+a half years of training data or carry an is-it-there indicator that
+makes the morning prediction pay for a feature it never has. Two models,
+each predicting what it can.
+
+**Registry activations are now scoped to a role** (`default` = card,
+`preview` = 直前情報). Neither is a candidate for the other's slot, cron
+names a role rather than a version id that goes stale on the next
+retrain, and entries written before roles existed read as `default` --
+so the activation already on .21 was unaffected. Verified: after
+registering the preview model, `default` still resolves to
+`logistic_cards_20260731`.
+
+**Which feature set to build is read from the registry entry**, not
+passed as a flag. A flag would be a second place to state the same fact.
+
+### Deployed on .21
+
+```
+logistic_cards_preview_20260802  role=preview  91 features
+  window 2023-05-01..2026-08-02, 180,216 races
+  races_considered=180442 races_used=180216 dropped_no_single_winner=30
+  dropped_missing_feature=0 dropped_late_feature=0
+  dropped_missing_before_info=196
+```
+
+**Coverage is not the constraint it might have been**: 180,243 of 180,442
+finished races since 2023-05-01 carry a complete block (99.89%), and the
+30 further losses are the usual dead heats and void races. The generated
+PostgreSQL was checked against the live database before deploying --
+valid, `bi_too_late = 0`, 進入変更 on 6.4% of a day's lane rows against
+the 8.16% measured over the archive.
+
+Dry run at 13:25 JST on 2026-08-03, rolled back:
+
+```
+races_in_dataset=60 races_predicted=3 skipped_deadline_passed=55
+skipped_not_yet_due=2 rows_written=18
+[races_considered=144 races_used=60 dropped_missing_before_info=84]
+```
+
+That shape is the design working: of 144 races, 60 had their 直前情報 in
+at that moment, 84 had not run their exhibition yet, and only the 3 whose
+deadline was within ten minutes were predicted.
+
+### The schedule
+
+One crontab line, odd minutes 08-21, after `capture_beforeinfo`. A race
+is normally predicted in the same cycle it was captured, but nothing
+depends on that ordering -- a race missed this cycle is picked up two
+minutes later, and the ten-minute lead absorbs it. DB only, no request.
+
+**Each race is predicted once**, unlike the morning run's "a later run
+adds a later-stamped row". Odds move, so a second odds reading is a
+second fact; 直前情報 does not change once published, so a second
+prediction would be the same arithmetic on the same inputs -- fifteen
+identical rows per race over the window.
+
+**Ten minutes out matches the earlier of `capture_odds`' leads**, so a
+probability and a price now exist at roughly the same moment for the same
+race. That is what item 2 of the plan (selection on price) needs and
+could not have without this: the pair can be compared without
+interpolating between odds readings.
+
+### What this does and does not establish
+
+It starts a record; it proves nothing yet. The +1.43% is a walk-forward
+figure on backfilled 直前情報 whose `available_at` is the deadline, not
+the fetch. The forward record accumulating from today is on *live*
+captures stamped when they were actually read, and it is the first
+evidence about the block that is not a backtest.
+
+The comparison that matters is now available and was not before: the same
+race carries a card-only probability from 06:45 and a 直前情報 probability
+from minutes before the deadline, settling against the same result. What
+the block is worth forward is a query away rather than another experiment.
+
+Still true, and unchanged by any of this: the best ROI measured anywhere
+is 0.9295 against a break-even of 1.0000, and the 26.41% takeout
+dominates every effect found so far.
