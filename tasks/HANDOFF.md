@@ -2675,3 +2675,59 @@ What it does establish is narrower and still useful: **feature work is
 not dead, it was being scored against the wrong rule.** Every previous
 "this feature is priced in" verdict was reached by measuring it with
 confidence selection.
+
+### 再分解：新特徴量は1号艇効果の精緻化ではなかった (2026-08-03)
+
+The open question from the previous entry. The card-only decomposition
+had found the EV rule's durable part was lane 1 alone -- the other five
+fell to 0.9812 once the ten largest payouts were removed, i.e. below
+break-even. Re-run with both blocks:
+
+| EV≥1.0, 上位10配当を除く | カードのみ | +両ブロック |
+|---|---|---|
+| 1号艇 | 1.1226 | 1.1496 |
+| **2-6号艇** | **0.9812** | **1.0648** |
+| 1号艇（30倍以下） | 1.1205 | 1.1474 |
+| **2-6号艇（30倍以下）** | 1.0131 | **1.1048** |
+
+| EV≥1.2, 上位10除く | カードのみ | +両ブロック |
+|---|---|---|
+| 1号艇 | 1.2562 | 1.3001 |
+| 2-6号艇 | 1.0615 | **1.1531** |
+| 2-6号艇（30倍以下） | 1.0781 | **1.2091** |
+
+| EV≥1.5, 上位10除く | カードのみ | +両ブロック |
+|---|---|---|
+| 1号艇 | 1.3597 | **1.5279** |
+| 2-6号艇 | 1.1820 | **1.2531** |
+| 2-6号艇（30倍以下） | 1.2274 | **1.3626** |
+
+**The outside lanes clear break-even for the first time.** And they do it
+*more* strongly under the 30x odds cap (1.1048 against 1.0648 uncapped
+at EV≥1.0), so it is not the long-shot tail carrying it -- the opposite
+of what the raw untrimmed figures did in the previous session.
+
+**Fewer bets, more hits.** At EV≥1.0 the outside-lane selections fall
+10,751 → 9,729 (−9.5%) while hits rise 1,004 → 1,059 (+5.5%). Betting
+less and connecting more is what a genuinely sharper probability looks
+like, as opposed to a threshold that merely moved.
+
+**The mechanism is consistent with where the feature should help.** Lane
+1 almost always runs course 1, so its per-course record carries little
+that the lane already implies; lanes 4-6 are where 進入変更 happens and
+where per-course ability varies most between racers -- the residual
+persistence measured earlier is 0.2031 at course 4, higher than courses
+2, 3 and 5. The effect landed on the outside, which is where the feature
+had something to say.
+
+So the previous conclusion is superseded: **the durable part is no
+longer lane 1 alone.** Per-course ability and 直前情報 together pick up a
+distortion the market leaves on the outside lanes that card features
+could not reach.
+
+Unchanged and still decisive: these are **closing** odds nobody can bet
+at, the 80-day window is the only one with odds so there is no
+out-of-sample test, and the thresholds and the odds cap were chosen
+after seeing the data. The trimmed figure is also **not an operational
+expectation** -- it is the return after deleting the ten best results,
+constructed to test tail-dependence, not to be earned.

@@ -777,22 +777,31 @@ tasks/HANDOFF.md for the evidence behind each line.
    **course** while we only observe **lane** — 進入 is observable pre-race
    only here. Staging plan unchanged (match the odds window first,
    ~12,000 pages, then daily incremental).
-2. **Selection on price** — the only untested mechanism for positive ROI.
-   Every rule evaluated so far picked a *lane* and ignored what it cost.
-   Both halves of the evidence are now accumulating: pre-deadline odds
-   since 2026-08-01, and the 直前情報 model's probabilities since
-   2026-08-03, and the **2連単/2連複 pool** since 2026-08-03 14:16.
-   It now has a **specific hypothesis to test** rather than an open
-   search: above about 3x, 1号艇 wins *more* than its price implies
-   (5-10x: 21.33% realised against 15.59% implied, return 1.3741 over
-   483 bets) while every other lane wins less at the same price — the
-   opposite of the favourite-longshot bias. The market seems to apply
-   too small an inside-lane premium at long prices. Survives a control
-   for the lane-1 racer's grade; does **not** reduce to grade, which was
-   the original guess and is refuted. 80 days, post-hoc odds cut,
-   closing prices, and no out-of-sample data exists — the forward
-   capture is the only available test. Still the only thing measured
-   anywhere in this project that cleared 1.0000.
+2. **Selection on price** — the only untested mechanism for positive ROI,
+   and as of 2026-08-03 the only one with a live hypothesis. Both halves
+   of the evidence are accumulating: pre-deadline odds since 2026-08-01,
+   the 直前情報 model's probabilities since 2026-08-03, and the
+   2連単/2連複 pool since 2026-08-03 14:16.
+
+   **What is now established (all on closing odds, all needing forward
+   confirmation).** Selecting on `p * odds` rather than on the model's
+   own confidence is the mechanism that was missing — every previous
+   "this feature is priced in" verdict was reached by scoring features
+   against confidence selection, which cannot benefit from a sharper
+   probability. Adding the 直前情報 and per-course blocks *hurts*
+   confidence selection (0.9227 → 0.9117) and *helps* EV selection
+   (`ev_best` @1.5: 1.5025 → 1.6879).
+
+   And the durable part is no longer lane 1 alone. Tail-trimmed, the
+   outside lanes go 0.9812 → **1.0648** at EV≥1.0 and 1.0615 → **1.1531**
+   at EV≥1.2, clearing break-even for the first time — more strongly
+   under a 30x odds cap, so not tail-driven. Bets fall 9.5% while hits
+   rise 5.5%.
+
+   Still not a strategy: closing prices nobody can bet at, one 80-day
+   window with no out-of-sample, thresholds picked after looking, and
+   the trimmed figure is a tail-dependence test rather than an
+   expectation. The forward capture is the only real test.
 3. ~~**Wire the per-course stats into the dataset**~~ — **done
    2026-08-03.** `dataset.include_racer_stats` joins
    `racer_period_course_stats` on the course actually taken
