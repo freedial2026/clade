@@ -728,10 +728,41 @@ service) rather than sharing PHP-FPM with anything else:
   `boatpred`'s PHP-FPM can read it without a group/ownership change on
   either account.
 
-Not yet done: no cron line installed for the refresh yet (see the next
-session or a follow-up in this one), and the TLS cert on `boat-internal.conf`
-is self-signed, so a browser will warn on first visit -- accept it or
-add the cert as trusted, same as for any other self-signed LAN service.
+### Deployed and verified on .21 (2026-08-03 19:04 JST)
+
+- PHP-FPM pool `boat-dashboard`, running as `boatpred`, own socket
+  (`/run/php/php8.4-fpm-boat-dashboard.sock`), own log directory
+  (`/var/log/php/boat-dashboard/` -- `boatpred` cannot write into the
+  `www-data`-owned `/var/log/php/` the `realestate` pool logs to, so this
+  needed its own directory rather than reusing that one).
+- `/srv/boat-dashboard`, owned by `boatpred:boatpred`, deployed from
+  `web/dashboard/` via `git pull` + `sudo rsync`.
+- `boat-internal.conf` backed up to `boat-internal.conf.bak-20260803`
+  before editing; `nginx -t` passed, `systemctl reload nginx` (not
+  restart) was used so the shared daemon serving `admin2.ir2103.com`
+  (the realestate tenant) saw no interruption -- confirmed with a direct
+  curl to that domain after the reload, still 200.
+- `/health` and `/ready` still proxy to `boat-prediction.service`
+  (confirmed 200/200 after the reload); `/docs/`, `/snapshot/`, `*.md`,
+  `*.csv` all confirmed 403.
+- `scripts/refresh_dashboard.sh` (new, tracked in the repo) runs the
+  generator as `ash`, then `sudo install`s the result world-readable at
+  the deployed path -- `boatpred`'s pool just needs read access, which a
+  644 file grants regardless of the copy ending up root-owned.
+- Cron: `*/2 8-21 * * *`, logging to `logs/dashboard-refresh.log`,
+  installed after `capture_beforeinfo`/`predict_daily --role preview` on
+  the crontab (backed up as `~/crontab.bak.20260803c`).
+
+Verified end to end: `https://boat.internal/` returns 200 and renders
+both new report sections with real data (10-14 races depending on the
+run); `api/dashboard.php` returns the same array as JSON.
+
+**Remaining, for the user rather than this session**: the TLS cert on
+`boat-internal.conf` is self-signed, so a browser will warn on first
+visit -- accept it or add it as trusted, same as any other self-signed
+LAN service. No paper bet has been recorded through the UI yet (the
+vendor's session-only, CSRF-protected API was left as shipped and was
+not exercised here).
 
 ## Next, in order
 
