@@ -6,8 +6,9 @@
 - Status: B/K-file 21-year load **complete** on 192.168.11.21
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
-- Last handoff: first application of this schema to a **live
-  PostgreSQL** (previously only in-memory SQLite).
+- Last handoff: new 予想結果レポート page (`results.php`) built and tested
+  locally, **not yet deployed** to `.21` -- awaiting approval for `git
+  push` + host deploy + crontab addition. See the dated section below.
 
 ## Runtime target: 192.168.11.21 (`boat.internal`)
 
@@ -763,6 +764,94 @@ visit -- accept it or add it as trusted, same as any other self-signed
 LAN service. No paper bet has been recorded through the UI yet (the
 vendor's session-only, CSRF-protected API was left as shipped and was
 not exercised here).
+
+## 予想結果レポートページ (results.php) 追加 -- ローカルで完成、未デプロイ (2026-08-04)
+
+User request: 「レポートページを作成し、各レースの予想を行いその結果も見れるように
+(Cronで)」+「cronで何のデータを取得しているか、見えるようにして」-- a page showing
+each race's prediction alongside its actual result, refreshed by cron like the
+existing dashboard, plus visibility into what each cron job is actually
+collecting.
+
+`dashboard_report.build_dashboard` only shows races before their deadline (the
+live decision desk); once a race closes it drops out of that query entirely,
+so there was nowhere to see whether a prediction was right. This is new, not a
+change to that existing behaviour.
+
+**`src/boat_prediction/db/results_report.py`** (new): `build_results_report`
+joins `race_predictions` (both `default` and `preview` roles, via
+`dashboard_report._model_probabilities`, reused rather than duplicated) against
+`race_results`/`race_result_entries` for a rolling window (`--days`, default
+8 = today + 7 prior days), grouped by `race_date`. Per race: each model's top
+pick + probability, the actual winner lane(s) (a list, to hold dead heats),
+`race_state` (`upcoming` / `pending` / `finished` / `void` / `cancelled`), and
+`card_hit`/`preview_hit` (`bool | None` -- null whenever the race has not
+actually settled, so it is excluded from the hit-rate denominator rather than
+counted as a miss). Per-day and overall hit-rate summaries follow.
+
+**This is hit rate, not ROI** -- whether the model's top-probability lane
+actually won, nothing about stakes or payouts. Deliberately separate from
+`dashboard_report.build_roi_report`'s payout-settled backtest; conflating the
+two would be misleading (a model can have a good hit rate and a mediocre
+return, since favourites win more but pay less).
+
+**`build_cron_report`** answers the second half of the request: a static
+`CRON_JOBS` catalog transcribing the six lines actually installed in `.21`'s
+crontab (this repo does not otherwise track that state) is cross-referenced
+with `dashboard_report.build_collection_report`'s real row counts, so the page
+shows what cron has *actually* collected, not just what it is configured to
+do. **Caught a real bug via a regression test** before it shipped: both
+`predict_daily` (card) and `predict_daily --role preview` write rows labelled
+`予測 (<model version>)`, so matching by a shared string prefix silently
+attributed one job's count to the other whenever both had run (confirmed
+against a hand-built local snapshot: preview showed 30 rows, the card model's
+own count, instead of its real 18). Fixed by matching each job to its role's
+*exact* active version label (resolved from the model registry) instead of a
+prefix -- `test_card_and_preview_prediction_counts_are_not_conflated` pins it.
+`capture_odds` writes three bet types under three separate collection-report
+labels; `_merge_sources` sums their counts and unions their date ranges rather
+than picking one arbitrarily.
+
+**`web/dashboard/results.php`** (new): does not go through `bootstrap.php` --
+that enforces the vendor decision-desk template's own schema
+(site/risk/venues/races) and session/CSRF state, neither of which this report
+needs. Reads `RESULTS_SNAPSHOT_FILE` (same env-var pattern as
+`production-dashboard.php`), renders date tabs, a per-day summary, the
+race-by-race prediction/result/hit table, an overall summary, and the cron
+catalog table. Reuses existing `report-table`/`report-section`/`mini-chip`
+CSS classes; added ~25 lines of new CSS for hit badges, date tabs and the nav
+bar, plus a small `top-nav` link pair added to both `index.php` and
+`results.php` so the two pages cross-link.
+
+**`scripts/refresh_results_report.sh`** (new): identical shape to
+`refresh_dashboard.sh` (`.env` sourcing, `sudo install` to
+`/srv/boat-dashboard/snapshot/`), calling `results_report` instead of
+`dashboard_report`.
+
+**Tested locally, not against `.21`** (no Postgres route from this Windows
+PC, same constraint as every prior local-only pass): 13 new tests in
+`tests/test_results_report.py` (SQLite fixtures, mirroring
+`test_dashboard_report.py`'s pattern) covering hit/miss/dead-heat/pending/
+cancelled/void states and the cron-catalog matching, including the
+conflation regression above. Full suite: **843/843 pass**, 0 regressions.
+Visual check: built a hand-populated SQLite snapshot, served
+`web/dashboard/` with `php -S` locally, walked both date tabs via the
+in-app browser tool (screenshots unavailable in this session --
+verified via the accessibility tree / page text instead) -- predictions,
+results, hit badges, state pills and the cron table all rendered
+correctly and matched the fixture's expected numbers by hand.
+
+**Not yet done, needs approval** (`git push` + production host deploy +
+crontab edit, per `.claude/rules/01-approval-policy.md`):
+1. `git push` this branch.
+2. On `.21`: `git pull`, then `sudo rsync` `web/dashboard/` into
+   `/srv/boat-dashboard/` (same pattern as the original dashboard deploy).
+3. Add one crontab line:
+   `*/10 7-23 * * * /home/ash/boat-prediction/scripts/refresh_results_report.sh >> /home/ash/boat-prediction/logs/results-report-refresh.log 2>&1`
+   (10-minute cadence, lighter than the live dashboard's 2-minute one --
+   predictions/results change far less often).
+4. Run `refresh_results_report.sh` once by hand and confirm
+   `https://boat.internal/results.php` renders real data.
 
 ## Next, in order
 

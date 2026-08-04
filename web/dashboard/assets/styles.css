@@ -14,3 +14,28 @@
 .roi-hypothesis-row{background:rgba(255,189,85,.05)}
 .roi-hypothesis-row td{border-top:1px dashed var(--line)}
 .roi-breakeven{font-size:10px;color:var(--muted);margin-top:10px}
+
+/* --- Added: results.php (prediction-vs-result report, cron catalog) --- */
+.top-nav{display:flex;gap:4px;margin-left:18px}
+.top-nav a{color:var(--muted);text-decoration:none;font-size:12px;padding:8px 12px;border-radius:8px}
+.top-nav a:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.top-nav a.active{color:var(--text);background:#122139;font-weight:700}
+.date-tabs{display:flex;gap:6px;overflow:auto;padding-bottom:4px;margin:14px 0}
+.date-tabs a{white-space:nowrap;color:var(--muted);text-decoration:none;font-size:11px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:rgba(5,15,26,.48)}
+.date-tabs a:hover{border-color:var(--cyan)}
+.date-tabs a.active{color:#06111e;background:linear-gradient(135deg,var(--cyan),#5ea3ff);border-color:transparent;font-weight:800}
+.summary-cards{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin:14px 0}
+.summary-cards div{border:1px solid var(--line);border-radius:12px;background:rgba(5,15,26,.42);padding:12px}
+.summary-cards span,.summary-cards strong{display:block}
+.summary-cards span{font-size:10px;color:var(--muted)}
+.summary-cards strong{font-size:20px;margin-top:4px}
+.hit-yes{color:var(--green);font-weight:800}
+.hit-no{color:var(--red);font-weight:800}
+.hit-pending{color:var(--muted)}
+.state-pill{font-size:9px;padding:4px 8px;border-radius:999px;font-weight:700}
+.state-pill.finished{color:var(--blue);background:rgba(111,169,255,.14)}
+.state-pill.pending{color:var(--amber);background:rgba(255,189,85,.12)}
+.state-pill.cancelled,.state-pill.void{color:var(--red);background:rgba(255,112,112,.12)}
+.state-pill.upcoming{color:var(--muted);background:rgba(255,255,255,.05)}
+@media(max-width:1150px){.summary-cards{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.top-nav{margin-left:0}}

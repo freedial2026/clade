@@ -40,6 +40,10 @@ $roiReport = $dashboard['roi_report'] ?? null;
         <span><?= e($site['brand_subtitle']) ?></span>
       </div>
     </div>
+    <nav class="top-nav">
+      <a href="index.php" class="active">ダッシュボード</a>
+      <a href="results.php">予想結果レポート</a>
+    </nav>
     <div class="header-status">
       <!-- $activeVenueCount -->
       <span class="status-chip status-live"><i></i><b id="activeVenueCount"><?= e($activeVenueCount) ?></b>会場開催中</span>

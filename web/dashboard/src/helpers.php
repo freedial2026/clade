@@ -143,6 +143,37 @@ function validate_dashboard_data(array $dashboard): void
     }
 }
 
+/** Renders a card/preview prediction's hit/miss/undecided state as a short label + CSS class. */
+function hit_badge(?bool $hit): array
+{
+    return match ($hit) {
+        true => ['class' => 'hit-yes', 'label' => '的中'],
+        false => ['class' => 'hit-no', 'label' => '不的中'],
+        default => ['class' => 'hit-pending', 'label' => '—'],
+    };
+}
+
+function race_state_label(string $state): string
+{
+    return match ($state) {
+        'finished' => '確定',
+        'cancelled' => '中止',
+        'void' => '結果なし',
+        'pending' => '結果待ち',
+        default => '締切前',
+    };
+}
+
+function lanes_text(array $lanes): string
+{
+    return $lanes === [] ? '—' : implode('・', array_map(static fn($l) => "{$l}号艇", $lanes));
+}
+
+function probability_text(?float $value): string
+{
+    return $value === null ? '—' : number_format($value * 100, 1) . '%';
+}
+
 function json_for_html(mixed $value): string
 {
     return json_encode(
