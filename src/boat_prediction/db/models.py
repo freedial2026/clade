@@ -848,3 +848,45 @@ class RaceSurfaceCondition(TimestampMixin, Base):
     observed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))
+
+
+class LiveRaceResult(TimestampMixin, Base):
+    """A race's result as read from the official page, minutes after it ran.
+
+    `race_results` holds the same outcome from the K-file, which is the
+    authoritative archive and stays so. What this adds is *when*: the
+    K-file is a daily file, loaded at 02:00, so a prediction made this
+    morning cannot be checked against its race until tomorrow.
+
+    Kept separate rather than written into `race_results` for the reason
+    that already justified splitting `before_info_entries` from
+    `exhibition_entries`: the two carry different availability semantics.
+    `race_results.available_at` is midnight the following day by
+    construction (`loader.results_available_at`), and a row whose
+    `available_at` sometimes meant the fetch and sometimes meant the day
+    boundary would make any feature query mean different things depending
+    on whether the archive had arrived yet.
+
+    `win_payout_yen` is on the winning lane's row only, mirroring how
+    `race_payouts` keys 単勝 by combination. It is here so the day's
+    return can be shown before the archive lands, not because it is a
+    second source of truth for payouts.
+    """
+
+    __tablename__ = "live_race_results"
+    __table_args__ = (UniqueConstraint("race_id", "lane_number"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    race_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("races.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    lane_number: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    finish_position: Mapped[int | None] = mapped_column(SmallInteger)
+    status: Mapped[str | None] = mapped_column(String(10))
+    start_timing_sec: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    win_payout_yen: Mapped[int | None] = mapped_column(Integer)
+    winning_method: Mapped[str | None] = mapped_column(String(20))
+
+    observed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_sources.id"))

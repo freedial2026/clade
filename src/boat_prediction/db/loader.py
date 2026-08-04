@@ -67,6 +67,7 @@ SOURCE_JMA_WEATHER = "jma_weather"
 SOURCE_FAN_FILE = "boatrace_fan_file"
 SOURCE_BEFOREINFO = "boatrace_beforeinfo"
 SOURCE_BOATRACE_OPENAPI = "boatrace_openapi"
+SOURCE_RACERESULT = "boatrace_raceresult"
 
 _FIXED_ENTRY_MARKER = "進入固定"
 
@@ -215,6 +216,20 @@ _DATA_SOURCE_SEED = (
         "license_note": "公共データ利用規約（第1.0版）: reuse including commercial use "
         "allowed with attribution. Rate-limited fetch, not redistributed in "
         "this repository.",
+    },
+    {
+        "code": SOURCE_RACERESULT,
+        "name": "BOATRACE 払戻金・結果 (per-race page, captured live)",
+        "provider": "一般財団法人BOATRACE振興会",
+        "source_type": "official_website",
+        "official_url": "https://www.boatrace.jp/owpc/pc/race/raceresult",
+        "terms_url": "https://www.boatrace.jp/owpc/pc/extra/policy.html",
+        "acquisition_method": "scheduled_scrape",
+        "update_frequency": "per_race",
+        "license_note": "Official website. Captured once per race a few minutes after "
+        "its deadline (~150 requests/day, 3s apart) so a same-day prediction can be "
+        "checked the same day; the K-file remains the authoritative archive. Not "
+        "redistributed in this repository.",
     },
     {
         "code": SOURCE_BEFOREINFO,
