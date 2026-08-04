@@ -2731,3 +2731,100 @@ out-of-sample test, and the thresholds and the odds cap were chosen
 after seeing the data. The trimmed figure is also **not an operational
 expectation** -- it is the return after deleting the ten best results,
 constructed to test tail-dependence, not to be earned.
+
+## Walk-forward EV, and the correction that reframed it (2026-08-04)
+
+### The odds window is no longer 81 days
+
+The binding caveat on the EV result was that the only window with odds
+was 81 days, so no out-of-sample test was possible and the thresholds had
+been chosen after seeing the data. **38,670 races over 263 days now
+carry closing odds (2025-07-29 … 2026-04-17)**, up from 11,894 over 81.
+
+The files had been downloaded months ago and sat on the development PC,
+never transferred or loaded — the host held only the original 81 days.
+Transfer notes worth keeping: a backgrounded `tar` **reported exit code 0
+while producing a truncated 41 MB archive** (6,342 of ~27,000 entries), so
+the intermediate file was abandoned for `tar | ssh` streaming, in monthly
+batches because reading many small files off the Windows filesystem is
+the bottleneck. Load: 477,098 new snapshots, **0 failures**.
+
+### Walk-forward removes the threshold-peeking
+
+`db/evaluate_p2_walkforward.py` (new). Probabilities come from one pass in
+which the model for month M is fit only on races before M. The rule — EV
+threshold, odds cap and lane group together — is then chosen on prior
+months by trimmed ROI with a 300-bet minimum, and applied once to the
+next month. Monthly rather than a single split because the window runs
+summer to spring and a single split would leave a failure unattributable
+between overfitting and season.
+
+Every fold chose the same rule: **EV ≥ 1.50, no odds cap, lane 1**.
+
+| test month | bets | hit | ROI | trimmed |
+|---|---|---|---|---|
+| 2025-11 | 175 | 34.29% | 1.3234 | 0.9921 |
+| 2025-12 | 240 | 41.67% | 1.8092 | 1.3596 |
+| 2026-01 | 219 | 37.90% | 1.6854 | 1.2852 |
+| 2026-02 | 147 | 44.22% | 1.9490 | 1.3555 |
+| 2026-03 | 191 | 39.27% | 1.8215 | 1.3105 |
+| 2026-04 | 93 | 38.71% | 1.3849 | 0.9036 |
+| **aggregate** | **1,065** | **39.34%** | **1.6884** | **1.5403** |
+
+6/6 months above break-even on raw ROI; **4/6 on trimmed**, which is the
+figure to quote when someone asks how robust it is.
+
+**Not concentrated.** 24 venues (largest share 10.6%), 167 dates (largest
+1.4%), and of the 23 venues with ≥20 bets, **22 are above break-even**.
+The single largest win contributes 1.7% of all returns; removing it moves
+ROI from 1.7073 to 1.6791.
+
+**Calibration of the three parties**, on the selected bets: the model says
+46.8%, the truth is 40.0%, the market implies 18.5%. The model is
+somewhat over-confident; the market is wrong by more than a factor of two.
+
+### The correction: most of it is the odds band, not the model
+
+The rule buys lane-1 boats at a median 4.10x (p25 3.00, p75 5.90). So the
+question that had to be asked before believing anything: **what does
+backing *every* lane-1 boat in that band return, with no model at all?**
+
+| lane-1 closing odds | bets | win% | ROI |
+|---|---|---|---|
+| 1–1.5x | 11,579 | 69.9% | 0.8129 |
+| 1.5–2x | 5,664 | 54.0% | 0.8914 |
+| 2–3x | 4,371 | 40.8% | 0.9530 |
+| **3–4x** | 1,606 | 31.9% | **1.0748** |
+| **4–6x** | 1,095 | 25.8% | **1.2150** |
+| **6–10x** | 405 | 16.3% | **1.1899** |
+| 10x+ | 114 | 17.5% | 2.5114 |
+| all | 24,834 | — | 0.9041 |
+
+**The band clears break-even on its own.** The EV rule's bets sit almost
+entirely in it, where the naive return is ~1.13, so **the majority of
+1.6884 is the band and not the model.** The model adds on top — roughly
+1.69 against 1.13 — but the attribution was about to be got wrong, in the
+same way as three earlier results this week: the DiD figure that was not
+the tradeable one, the flat portfolio that was not the takeout, and the
+raw motor range that was mostly binomial noise.
+
+**What the band effect is.** Lane 1's value rises monotonically with its
+price and crosses break-even around 3x, across 24,834 bets. That is the
+classic favourite-longshot bias running *backwards* inside lane 1, and it
+matches the factor strengths measured on 2026-08-01 exactly: lane is
+worth 53.4 win-probability points against 13.1 for the best racer
+measure. Bettors mark a lane-1 boat down for a weak racer and mark it
+down too far, because the lane advantage barely depends on who is in it.
+
+### Still decisive, and unchanged
+
+**These are closing odds.** The band is *defined* by the closing price, so
+at the moment a bet must be placed it is not yet known which band a boat
+is in. Nothing in this section is executable, and no quantity of archived
+odds will make it so. The pre-deadline captures at −60/−10/−2 minutes,
+running since 2026-08-02, are the only thing that can answer it, and they
+need weeks.
+
+Also: six test months, one regime, and the EV grid itself was drawn after
+earlier sessions had reported EV≥1.5 figures — the walk-forward removes
+peeking *within* the grid, not the grid's provenance.
