@@ -41,7 +41,14 @@ from .dashboard_report import (
     _model_probabilities,
     build_collection_report,
 )
-from .models import RACE_STATUS_CANCELLED, Race, RaceResult, RaceResultEntry, Venue
+from .models import (
+    RACE_STATUS_CANCELLED,
+    LiveRaceResult,
+    Race,
+    RaceResult,
+    RaceResultEntry,
+    Venue,
+)
 from .predict_daily import PREVIEW_ROLE
 from .session import create_db_engine, create_session_factory
 
@@ -111,10 +118,34 @@ def _active_version_or_none(registry: ModelRegistry, role: str) -> str | None:
 
 def _actual_results(session: Session, race_ids: list) -> dict:
     """`{race_id: {lane: finish_position or None}}` for races with a
-    recorded `RaceResult`. A race absent from this dict has no result yet
-    at all (still upcoming, or K-file not ingested)."""
+    result. A race absent from this dict has no result yet at all.
+
+    Two sources, and the order matters. The K-file (`race_results`) is
+    authoritative but arrives at 02:00 the next day, so on its own this
+    report showed every one of today's races as `pending` until the
+    following morning -- a prediction could not be checked against its own
+    race on the day it was made. `live_race_results` is captured from the
+    official page minutes after each race and fills that gap.
+
+    The K-file wins wherever both exist: it is the archive, and the live
+    capture is there for timing rather than for truth.
+    """
     if not race_ids:
         return {}
+    by_race: dict = {}
+
+    live = session.execute(
+        select(
+            LiveRaceResult.race_id,
+            LiveRaceResult.lane_number,
+            LiveRaceResult.finish_position,
+        ).where(LiveRaceResult.race_id.in_(race_ids))
+    ).all()
+    for race_id, lane, finish_position in live:
+        by_race.setdefault(race_id, {})[int(lane)] = (
+            int(finish_position) if finish_position is not None else None
+        )
+
     rows = session.execute(
         select(
             RaceResult.race_id,
@@ -123,11 +154,12 @@ def _actual_results(session: Session, race_ids: list) -> dict:
         ).join(RaceResultEntry, RaceResultEntry.race_result_id == RaceResult.id)
         .where(RaceResult.race_id.in_(race_ids))
     ).all()
-    by_race: dict = {}
+    archived: dict = {}
     for race_id, lane, finish_position in rows:
-        by_race.setdefault(race_id, {})[int(lane)] = (
+        archived.setdefault(race_id, {})[int(lane)] = (
             int(finish_position) if finish_position is not None else None
         )
+    by_race.update(archived)
     return by_race
 
 

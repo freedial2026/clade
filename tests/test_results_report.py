@@ -21,16 +21,17 @@ from sqlalchemy.orm import Session
 from boat_prediction.db import loader, results_report
 from boat_prediction.db.models import (
     Base,
+    LiveRaceResult,
     OddsSnapshot,
     Race,
     RaceEntry,
     RacePrediction,
+    Racer,
     RaceResult,
     RaceResultEntry,
-    Racer,
 )
-from boat_prediction.model_registry import DEFAULT_ROLE, ModelRegistry
 from boat_prediction.db.predict_daily import PREVIEW_ROLE
+from boat_prediction.model_registry import DEFAULT_ROLE, ModelRegistry
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -360,3 +361,86 @@ class BuildCronReportTest(ResultsReportTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+RACE_DATE = dt.date(2026, 8, 4)
+
+
+class LiveResultFallbackTest(unittest.TestCase):
+    """Today's races must show a result today.
+
+    The K-file arrives at 02:00 the next day, so before the live capture
+    existed every race on the current card read as `pending` and a
+    prediction could not be checked against its own race.
+    """
+
+    def setUp(self) -> None:
+        self.engine = _engine()
+        self.session = Session(self.engine)
+        loader.ensure_reference_data(self.session)
+        venue = loader._venue(self.session, "01")
+        self.race = Race(
+            venue_id=venue.id,
+            race_date=RACE_DATE,
+            race_number=1,
+            status="scheduled",
+            scheduled_deadline_at=dt.datetime(
+                RACE_DATE.year, RACE_DATE.month, RACE_DATE.day, 10, 0, tzinfo=dt.UTC
+            ),
+        )
+        self.session.add(self.race)
+        self.session.flush()
+
+    def tearDown(self) -> None:
+        self.session.close()
+        self.engine.dispose()
+
+    def _add_live(self, winner: int = 1) -> None:
+        observed = dt.datetime(
+            RACE_DATE.year, RACE_DATE.month, RACE_DATE.day, 10, 10, tzinfo=dt.UTC
+        )
+        for lane in range(1, 7):
+            self.session.add(
+                LiveRaceResult(
+                    race_id=self.race.id,
+                    lane_number=lane,
+                    finish_position=1 if lane == winner else lane + 1,
+                    observed_at=observed,
+                    available_at=observed,
+                )
+            )
+        self.session.flush()
+
+    def test_a_live_result_is_used_when_the_k_file_has_not_arrived(self) -> None:
+        self._add_live(winner=3)
+
+        found = results_report._actual_results(self.session, [self.race.id])
+
+        self.assertIn(self.race.id, found)
+        self.assertEqual(found[self.race.id][3], 1)
+
+    def test_without_either_source_the_race_is_absent(self) -> None:
+        found = results_report._actual_results(self.session, [self.race.id])
+
+        self.assertEqual(found, {})
+
+    def test_the_k_file_wins_where_both_exist(self) -> None:
+        """The archive is authoritative; the live capture is for timing."""
+        self._add_live(winner=3)
+        result = RaceResult(race_id=self.race.id, available_at=dt.datetime.now(dt.UTC))
+        self.session.add(result)
+        self.session.flush()
+        for lane in range(1, 7):
+            self.session.add(
+                RaceResultEntry(
+                    race_result_id=result.id,
+                    lane_number=lane,
+                    finish_position=1 if lane == 5 else lane,
+                )
+            )
+        self.session.flush()
+
+        found = results_report._actual_results(self.session, [self.race.id])
+
+        self.assertEqual(found[self.race.id][5], 1)
+        self.assertNotEqual(found[self.race.id][3], 1)
