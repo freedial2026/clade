@@ -227,6 +227,33 @@ class CaptureRunTest(_Base):
         self.assertEqual(result.failed, 1)
         self.assertTrue(result.errors)
 
+    def test_each_stored_race_is_checkpointed(self) -> None:
+        """A single commit at the end cost a 130-race catch-up run once."""
+        calls = []
+        capture_due_results(
+            self.session,
+            race_date=RACE_DATE,
+            now=DEADLINE + dt.timedelta(minutes=10),
+            opener=_Opener(),
+            sleep=lambda _s: None,
+            checkpoint=lambda: calls.append(1),
+        )
+
+        self.assertEqual(len(calls), 1)
+
+    def test_an_unconfirmed_race_is_not_checkpointed(self) -> None:
+        calls = []
+        capture_due_results(
+            self.session,
+            race_date=RACE_DATE,
+            now=DEADLINE + dt.timedelta(minutes=10),
+            opener=_Opener(EMPTY_SHELL),
+            sleep=lambda _s: None,
+            checkpoint=lambda: calls.append(1),
+        )
+
+        self.assertEqual(calls, [])
+
     def test_nothing_due_makes_no_request(self) -> None:
         opener = _Opener()
 

@@ -17,6 +17,13 @@ rather than defensively long.
 row is never fetched again. Volume is therefore about one request per
 race, ~150 on a racing day.
 
+**Checkpointed.** The caller passes a `checkpoint` that is called after
+each race is stored, so an interrupted run keeps what it captured. A
+single commit at the end cost a whole catch-up run of 130 races the first
+time this was used: the process was killed nine minutes in and every
+fetched result went with it. Results can be re-fetched, but a capture
+that silently discards its work is the wrong shape for collection.
+
 **A page with no result is not an empty result.** A venue not racing that
 day, and a race not yet confirmed, both return 200 with a shell. Writing
 "no winner" from either would be worse than writing nothing, so
@@ -164,6 +171,7 @@ def capture_due_results(
     opener: object | None = None,
     delay_seconds: float = DEFAULT_REQUEST_DELAY_SECONDS,
     sleep=time.sleep,
+    checkpoint=None,
 ) -> CaptureResultsResult:
     now = _as_aware_utc(now or dt.datetime.now(dt.UTC))
     result = CaptureResultsResult()
@@ -195,6 +203,8 @@ def capture_due_results(
         if written:
             result.stored += 1
             result.lane_rows += written
+            if checkpoint is not None:
+                checkpoint()
         else:
             result.not_confirmed_yet += 1
 
@@ -218,6 +228,7 @@ def _main(argv: list[str] | None = None) -> int:
                 race_date=race_date,
                 settle_minutes=args.settle_minutes,
                 delay_seconds=args.delay_seconds,
+                checkpoint=session.commit,
             )
             session.commit()
     finally:
