@@ -28,8 +28,8 @@ at face value: these are pari-mutuel pools, a bet is *in* the pool it is
 priced against, and a ¥10,000 ticket on a thin combination moves its own
 price -- worst on exactly the long shots an EV rule selects.
 
-Which bet types can be measured, and which cannot
--------------------------------------------------
+Which bet types can be *selected on price*, and which can only be settled
+--------------------------------------------------------------------------
 
 Settling a *fixed* rule needs only the winning combination's payout, and
 `race_payouts` has that for all seven pools over 21 years. Selecting on
@@ -44,23 +44,29 @@ and that grid exists for far fewer:
 | 2連複 | live capture only, from 2026-08-03 | 21 years |
 | 拡連複 / 3連単 / 3連複 | **none** | 21 years |
 
-`UNPRICED_BET_TYPES` names the last row and this runner reports it
-explicitly instead of quietly leaving it out of the table. A rule for
-those pools could be settled but not *selected*, and a selection rule is
-the only thing with a live hypothesis behind it, so a number for them
-would answer a question nobody asked.
+`CONFIDENCE_ONLY_BET_TYPES` names the last row. For those three pools
+this runner still reports a `confidence` rule -- back the model's own
+top pick every race, settled at the real payout, the same question
+already asked and answered for 単勝 (0.9108 there) -- but never
+`ev_best`/`ev_all`: there is no price to select on, and `--bet-types`
+including them will not silently produce an EV number, it will produce
+no EV rows for them at all. See `combination_model.construct_trifecta_probabilities`
+for how a 3-way probability is built without a fitted third-place model.
 
 Where the probabilities come from
 ---------------------------------
 
-One P1 model, extended to the combination pools by
-`combination_model` rather than by fitting a separate model per pool:
-every probability here is a marginal of the same coherent 30-class
-exacta joint, so the pools cannot contradict each other. The conditional
-second place is chosen by measurement, not assertion -- `--second-place`
-selects between the Plackett-Luce conditional implied by P1 itself and
+One P1 model, extended to every combination pool by `combination_model`
+rather than by fitting a separate model each -- 複勝/2連複/3連複/拡連複
+are all sums over the same coherent 30- or 120-class joint, so the pools
+cannot contradict each other. The conditional second place is chosen by
+measurement, not assertion -- `--second-place` selects between the
+Plackett-Luce conditional implied by P1 itself and
 `second_place.ConditionalSecondPlaceModel`'s lane-frequency counts, and
-both are scored on held-out second-place log-loss in the same run.
+both are scored on held-out second-place log-loss in the same run. Third
+place (for 3連単/3連複/拡連複) is always one more Plackett-Luce step on
+top of whichever exacta joint was built -- see `combination_model` for
+why a lane-frequency third place is not offered.
 
 Settlement
 ----------
@@ -90,8 +96,12 @@ from sqlalchemy.orm import Session
 
 from ..combination_model import (
     PlackettLuceSecondPlace,
+    construct_trifecta_probabilities,
+    decode_trifecta,
     quinella_probabilities,
+    sanrenpuku_probabilities,
     top2_probabilities,
+    wide_probabilities,
 )
 from ..exacta import construct_exacta_probabilities, decode_combination
 from ..metrics import multiclass_log_loss
@@ -110,13 +120,14 @@ this stake, so `staked_yen` is just `bets * STAKE_YEN`."""
 
 SPECIAL_REFUND_COMBINATION = "特払い"
 
-UNPRICED_BET_TYPES = ("拡連複", "３連単", "３連複")
+CONFIDENCE_ONLY_BET_TYPES = ("拡連複", "３連単", "３連複")
 """Pools with settled payouts but no odds grid anywhere in this database.
 
 Reported by name in the output. Fetching a grid for them is possible
-(the site renders it) but has never been run, and until it is, no
-EV-selected figure for these pools can exist -- only a confidence-selected
-one, which is the rule already measured and rejected for 単勝.
+(the site renders it) but has never been run. Each still gets a
+`confidence` rule -- settle the model's own top pick against the real
+payout -- but never `ev_best`/`ev_all`, since there is no price to
+select on.
 """
 
 
@@ -124,16 +135,23 @@ one, which is the rule already measured and rejected for 単勝.
 class BetTypeSpec:
     """How one pool maps onto the odds table and the payout table.
 
-    `odds_bet_type` is `odds_snapshots.bet_type`; `payout_bet_type` is
+    `odds_bet_type` is `odds_snapshots.bet_type`, `None` when
+    `requires_odds` is `False` (no grid exists for this pool at all, so
+    there is nothing to look up). `payout_bet_type` is
     `race_payouts.bet_type`, which is written in Japanese with full-width
     digits ("２連単") because that is what the K-file carries.
+
+    `candidates` is the size of the full grid (6 for 単勝/複勝, 30 for
+    2連単, ...) and is only consulted when `requires_odds` is `True`, to
+    tell a complete capture from a partial one.
     """
 
     key: str
     label: str
-    odds_bet_type: str
+    odds_bet_type: str | None
     payout_bet_type: str
     candidates: int
+    requires_odds: bool = True
 
 
 BET_TYPE_SPECS: dict[str, BetTypeSpec] = {
@@ -141,9 +159,17 @@ BET_TYPE_SPECS: dict[str, BetTypeSpec] = {
     "place": BetTypeSpec("place", "複勝", "place_low", "複勝", 6),
     "exacta": BetTypeSpec("exacta", "2連単", "exacta", "２連単", 30),
     "quinella": BetTypeSpec("quinella", "2連複", "quinella", "２連複", 15),
+    "trifecta": BetTypeSpec("trifecta", "3連単", None, "３連単", 120, requires_odds=False),
+    "sanrenpuku": BetTypeSpec("sanrenpuku", "3連複", None, "３連複", 20, requires_odds=False),
+    "wide": BetTypeSpec("wide", "拡連複", None, "拡連複", 15, requires_odds=False),
 }
 
 DEFAULT_BET_TYPES = tuple(BET_TYPE_SPECS)
+
+_TRIFECTA_KEYS = ("trifecta", "sanrenpuku", "wide")
+"""Bet types whose candidates come from the 120-class trifecta joint
+rather than the 30-class exacta joint, so the loop below only pays for
+building it when one of these three was actually asked for."""
 
 # Odds for every pool in one pass. `is_closing` separates the archived
 # deadline snapshot from the live pre-deadline capture; mixing them would
@@ -235,57 +261,77 @@ class SecondPlaceComparison:
 class BetTypeEvaluation:
     train_races: int = 0
     test_races: int = 0
-    priced_races: dict[str, int] = field(default_factory=dict)
+    races_evaluated: dict[str, int] = field(default_factory=dict)
     rules: list[BetTypeRuleResult] = field(default_factory=list)
     second_place: SecondPlaceComparison = field(default_factory=SecondPlaceComparison)
-    unpriced: tuple[str, ...] = UNPRICED_BET_TYPES
+    confidence_only: tuple[str, ...] = CONFIDENCE_ONLY_BET_TYPES
 
     def __str__(self) -> str:
-        priced = " ".join(f"{k}={v}" for k, v in sorted(self.priced_races.items()))
+        evaluated = " ".join(f"{k}={v}" for k, v in sorted(self.races_evaluated.items()))
         lines = [
             f"train_races={self.train_races} test_races={self.test_races}",
-            f"priced_races: {priced}",
+            f"races_evaluated: {evaluated}",
             str(self.second_place),
-            "no odds grid, not evaluated: " + ", ".join(self.unpriced),
+            "no odds grid, confidence only: " + ", ".join(self.confidence_only),
             "",
         ]
         lines.extend(str(r) for r in self.rules)
         return "\n".join(lines)
 
 
-def _combination_key(bet_type_key: str, candidate) -> str:
+def _combination_key(candidate) -> str:
     """The string `race_payouts.combination` uses for this candidate.
 
-    Single lane for 単勝/複勝, `"i-j"` for the two-boat pools -- ordered
-    for 2連単, low-high for 2連複, matching how the K-file writes them.
+    Single lane for 単勝/複勝 (a bare int/str), `"i-j"` for a two-boat
+    pool, `"i-j-k"` for a three-boat pool -- ordered for 2連単/3連単,
+    low-high(-high) for 2連複/3連複/拡連複. The caller is responsible for
+    handing this function candidates already in the right order; it only
+    joins.
     """
-    if bet_type_key in ("win", "place"):
-        return str(candidate)
-    return f"{candidate[0]}-{candidate[1]}"
+    if isinstance(candidate, tuple):
+        return "-".join(str(lane) for lane in candidate)
+    return str(candidate)
 
 
-def _candidates(bet_type_key: str, probs: dict[int, float], joint: dict[int, float]):
+def _candidates(
+    bet_type_key: str,
+    probs: dict[int, float],
+    joint: dict[int, float],
+    trifecta_joint: dict[int, float] | None = None,
+):
     """`{combination_key: probability}` for one pool, all of it summed out
-    of the same exacta joint so the pools stay mutually consistent."""
+    of the same exacta/trifecta joint so the pools stay mutually
+    consistent."""
     if bet_type_key == "win":
-        return {str(lane): probs[lane] for lane in LANES}
+        return {_combination_key(lane): probs[lane] for lane in LANES}
     if bet_type_key == "place":
-        return {str(lane): p for lane, p in top2_probabilities(joint).items()}
+        return {_combination_key(lane): p for lane, p in top2_probabilities(joint).items()}
     if bet_type_key == "exacta":
-        return {
-            _combination_key("exacta", decode_combination(code)): p for code, p in joint.items()
-        }
+        return {_combination_key(decode_combination(code)): p for code, p in joint.items()}
     if bet_type_key == "quinella":
+        return {_combination_key(pair): p for pair, p in quinella_probabilities(joint).items()}
+    if bet_type_key == "trifecta":
+        return {_combination_key(decode_trifecta(code)): p for code, p in trifecta_joint.items()}
+    if bet_type_key == "sanrenpuku":
         return {
-            _combination_key("quinella", pair): p
-            for pair, p in quinella_probabilities(joint).items()
+            _combination_key(triple): p
+            for triple, p in sanrenpuku_probabilities(trifecta_joint).items()
         }
+    if bet_type_key == "wide":
+        return {_combination_key(pair): p for pair, p in wide_probabilities(trifecta_joint).items()}
     raise ValueError(f"unknown bet type: {bet_type_key!r}")
 
 
 def _load_market(session: Session, specs, *, is_closing: bool, start_date, end_date):
-    """`{race_id: {bet_type_key: {combination: odds}}}`."""
+    """`{race_id: {bet_type_key: {combination: odds}}}`.
+
+    `specs` should already be filtered to `requires_odds` pools -- a spec
+    with `odds_bet_type=None` has nothing to look up, and passing it
+    through would put a `None` into the `IN` list for no benefit.
+    """
     wanted = {spec.odds_bet_type: spec.key for spec in specs}
+    if not wanted:
+        return {}
     statement = text(_ODDS_SQL).bindparams(bindparam("odds_bet_types", expanding=True))
     market: dict = {}
     rows = session.execute(
@@ -435,30 +481,33 @@ def evaluate_bet_types(
     result.second_place = _score_second_place(probabilities, test, conditional_model)
 
     specs = [BET_TYPE_SPECS[b] for b in bet_types]
+    priced_specs = [s for s in specs if s.requires_odds]
     market = _load_market(
-        session, specs, is_closing=is_closing, start_date=test_start, end_date=test_end
+        session, priced_specs, is_closing=is_closing, start_date=test_start, end_date=test_end
     )
     payouts = _load_payouts(session, specs, start_date=test_start, end_date=test_end)
+    needs_trifecta = any(spec.key in _TRIFECTA_KEYS for spec in specs)
 
     rules: dict[tuple, BetTypeRuleResult] = {}
     for spec in specs:
         rules[(spec.key, "confidence", DEFAULT_CONFIDENCE_THRESHOLD)] = BetTypeRuleResult(
             "confidence", DEFAULT_CONFIDENCE_THRESHOLD, bet_type=spec.key
         )
-        for threshold in ev_thresholds:
-            rules[(spec.key, "ev_best", threshold)] = BetTypeRuleResult(
-                "ev_best", threshold, bet_type=spec.key
-            )
-            rules[(spec.key, "ev_all", threshold)] = BetTypeRuleResult(
-                "ev_all", threshold, bet_type=spec.key
-            )
-    result.priced_races = {spec.key: 0 for spec in specs}
+        if spec.requires_odds:
+            for threshold in ev_thresholds:
+                rules[(spec.key, "ev_best", threshold)] = BetTypeRuleResult(
+                    "ev_best", threshold, bet_type=spec.key
+                )
+                rules[(spec.key, "ev_all", threshold)] = BetTypeRuleResult(
+                    "ev_all", threshold, bet_type=spec.key
+                )
+    result.races_evaluated = {spec.key: 0 for spec in specs}
 
     for race_id, probs_row in zip(test.race_ids, probabilities):
-        race_market = market.get(race_id)
         race_payouts = payouts.get(race_id)
-        if not race_market or not race_payouts:
+        if not race_payouts:
             continue
+        race_market = market.get(race_id)
         probs = {lane: float(probs_row[i]) for i, lane in enumerate(LANES)}
         conditional = (
             PlackettLuceSecondPlace(probs)
@@ -466,17 +515,38 @@ def evaluate_bet_types(
             else conditional_model
         )
         joint = construct_exacta_probabilities(probs, conditional)
+        # Only built when a 3-way pool was actually requested -- it is
+        # 120 cells instead of 30, and most races only need the pools
+        # that already have a grid.
+        trifecta_joint = (
+            construct_trifecta_probabilities(joint, probs) if needs_trifecta else None
+        )
 
         for spec in specs:
-            odds = race_market.get(spec.key)
             settled = race_payouts.get(spec.key)
+            if settled is None:
+                continue
+
+            if not spec.requires_odds:
+                # No price exists for this pool, so there is nothing to
+                # select on -- only the model's own top pick, settled at
+                # whatever it actually paid.
+                result.races_evaluated[spec.key] += 1
+                candidate_probs = _candidates(spec.key, probs, joint, trifecta_joint)
+                best_p = max(candidate_probs, key=lambda c: candidate_probs[c])
+                rule = rules[(spec.key, "confidence", DEFAULT_CONFIDENCE_THRESHOLD)]
+                rule.races += 1
+                _settle(rule, best_p, settled)
+                continue
+
+            odds = race_market.get(spec.key) if race_market else None
             # A partial grid would let a rule pick from a biased subset of
             # the pool, so an incomplete race is skipped rather than
             # evaluated on what happened to be captured.
-            if not odds or settled is None or len(odds) < spec.candidates:
+            if not odds or len(odds) < spec.candidates:
                 continue
-            result.priced_races[spec.key] += 1
-            candidate_probs = _candidates(spec.key, probs, joint)
+            result.races_evaluated[spec.key] += 1
+            candidate_probs = _candidates(spec.key, probs, joint, trifecta_joint)
             evs = {c: candidate_probs[c] * o for c, o in odds.items() if c in candidate_probs}
             if not evs:
                 continue
@@ -522,7 +592,8 @@ def _main(argv: list[str] | None = None) -> int:
         default="closing",
         help=(
             "closing = the archived deadline snapshot (単勝/複勝 only, but years of it); "
-            "live = the pre-deadline capture (all four pools, but only since 2026-08)"
+            "live = the pre-deadline capture (2連単/2連複 too, but only since 2026-08). "
+            "3連単/3連複/拡連複 have no grid either way and always run confidence-only."
         ),
     )
     parser.add_argument(

@@ -49,17 +49,40 @@ unfold. Neither dominates on argument alone, which is why both are run.
 Marginals
 ---------
 
-Every other combination bet this module supports is a *sum over the
-30-class joint*, never a separately estimated quantity, so all of them
-stay consistent with the P1 distribution by construction:
+Every other combination bet this module supports is a *sum over a joint
+distribution*, never a separately estimated quantity, so all of them stay
+consistent with the P1 distribution by construction:
 
 - 複勝 (top 2): `P(lane j in top 2) = P(first=j) + sum_i P(first=i, second=j)`
 - 2連複 (unordered pair): `P({i,j}) = P(i,j) + P(j,i)`
+- 3連複 (unordered triple): sum the 6 orderings of the trifecta joint that
+  land on the same set of three lanes
+- 拡連複 (wide -- pays on any 2 of the actual top 3): sum, over the
+  trifecta joint, of every ordered triple that contains both lanes of the
+  pair in any of its three positions
 
-3連単/3連複/拡連複 are **not** built here. They need a conditional third
-place, and more to the point no odds grid for them exists in this
-database (only the winning combination's payout), so a probability for
-them could not be scored against a price. See `evaluate_bet_types`.
+Third place: still Plackett-Luce, still a known defect
+--------------------------------------------------------
+
+3連単/3連複/拡連複 need a third-place conditional, which this module
+builds as one more Plackett-Luce step:
+
+    P(third = k | first = i, second = j) = p_k / (1 - p_i - p_j)
+
+applied on top of *whichever* exacta joint the caller already built --
+`construct_trifecta_probabilities` takes that joint as input rather than
+rebuilding it, so a trifecta constructed from the lane-frequency exacta
+joint is a hybrid: lane-frequency for the second place, Plackett-Luce for
+the third. There is no lane-frequency equivalent for third place here --
+that would need a 3-D count table (first, second, third) this module does
+not fit, and the archive is thin enough at that granularity
+(6*5*4 = 120 cells) that a smoothed count would mostly reflect the prior.
+
+No odds grid exists in this database for any of these three pools --
+only the winning combination's payout -- so a probability built here can
+never be scored against a price, only settled as a fixed pick against
+what actually paid. `evaluate_bet_types` handles that distinction; this
+module just supplies the numbers.
 """
 
 from __future__ import annotations
@@ -68,10 +91,16 @@ from .baseline import LANES
 from .exacta import ALL_COMBINATIONS, decode_combination
 
 __all__ = [
+    "ALL_TRIFECTA_COMBINATIONS",
     "CombinationModelError",
     "PlackettLuceSecondPlace",
+    "construct_trifecta_probabilities",
+    "decode_trifecta",
+    "encode_trifecta",
     "quinella_probabilities",
+    "sanrenpuku_probabilities",
     "top2_probabilities",
+    "wide_probabilities",
 ]
 
 
@@ -176,3 +205,125 @@ def _validate_joint(combination_probs: dict[int, float]) -> None:
         raise CombinationModelError(
             "combination_probs must cover exactly the 30 valid exacta combinations"
         )
+
+
+ALL_TRIFECTA_COMBINATIONS: tuple[int, ...] = tuple(
+    sorted(
+        first * 100 + second * 10 + third
+        for first in LANES
+        for second in LANES
+        for third in LANES
+        if len({first, second, third}) == 3
+    )
+)
+"""The 120 valid ordered (first, second, third) triples, coded as a
+3-digit int -- `first*100 + second*10 + third` -- mirroring
+`exacta.ALL_COMBINATIONS`'s 2-digit scheme."""
+
+
+def encode_trifecta(first: int, second: int, third: int) -> int:
+    if first not in LANES or second not in LANES or third not in LANES:
+        raise CombinationModelError(
+            f"lane out of range: first={first!r} second={second!r} third={third!r}"
+        )
+    if len({first, second, third}) != 3:
+        raise CombinationModelError(
+            f"first, second and third must be distinct: {(first, second, third)!r}"
+        )
+    return first * 100 + second * 10 + third
+
+
+def decode_trifecta(code: int) -> tuple[int, int, int]:
+    if code not in ALL_TRIFECTA_COMBINATIONS:
+        raise CombinationModelError(f"not a valid trifecta combination code: {code!r}")
+    first, remainder = divmod(code, 100)
+    second, third = divmod(remainder, 10)
+    return first, second, third
+
+
+def _third_place_conditional(
+    first_place_probabilities: dict[int, float], first: int, second: int
+) -> dict[int, float]:
+    others = [lane for lane in LANES if lane not in (first, second)]
+    remaining = 1.0 - first_place_probabilities[first] - first_place_probabilities[second]
+    if remaining <= _DEGENERATE_TOLERANCE:
+        probs = {lane: 1.0 / len(others) for lane in others}
+    else:
+        probs = {lane: first_place_probabilities[lane] / remaining for lane in others}
+        scale = sum(probs.values())
+        probs = {lane: p / scale for lane, p in probs.items()}
+    return probs
+
+
+def construct_trifecta_probabilities(
+    exacta_joint: dict[int, float], first_place_probabilities: dict[int, float]
+) -> dict[int, float]:
+    """`P(first=i, second=j, third=k) = exacta_joint[i,j] * P(third=k|i,j)`.
+
+    `exacta_joint` is whatever `exacta.construct_exacta_probabilities`
+    already produced -- Plackett-Luce or lane-frequency, this function
+    does not care which -- and only the third-place step is added here.
+    """
+    if set(exacta_joint) != set(ALL_COMBINATIONS):
+        raise CombinationModelError(
+            "exacta_joint must cover exactly the 30 valid exacta combinations"
+        )
+    if set(first_place_probabilities) != set(LANES):
+        raise CombinationModelError(
+            f"first_place_probabilities must cover lanes {LANES}, "
+            f"got {sorted(first_place_probabilities)}"
+        )
+
+    trifecta: dict[int, float] = {}
+    for code, p_first_second in exacta_joint.items():
+        first, second = decode_combination(code)
+        conditional = _third_place_conditional(first_place_probabilities, first, second)
+        for third, p_third in conditional.items():
+            trifecta[encode_trifecta(first, second, third)] = p_first_second * p_third
+
+    total = sum(trifecta.values())
+    if abs(total - 1.0) > 1e-6:
+        raise CombinationModelError(f"trifecta probabilities must sum to 1.0, got {total!r}")
+    return trifecta
+
+
+def _validate_trifecta(trifecta_probs: dict[int, float]) -> None:
+    if set(trifecta_probs) != set(ALL_TRIFECTA_COMBINATIONS):
+        raise CombinationModelError(
+            "trifecta_probs must cover exactly the 120 valid trifecta combinations"
+        )
+
+
+def sanrenpuku_probabilities(trifecta_probs: dict[int, float]) -> dict[tuple[int, int, int], float]:
+    """`P({i, j, k} fill the first three places, in any order)` -- 3連複.
+
+    Keyed by an ascending `(low, mid, high)` tuple, matching how
+    `race_payouts.combination` writes a 3連複 ("1-2-3", always sorted).
+    Each of the 20 unordered triples is the sum of the 6 orderings of the
+    trifecta joint that produce it, so the 20 values sum to 1.0.
+    """
+    _validate_trifecta(trifecta_probs)
+    triples: dict[tuple[int, int, int], float] = {}
+    for code, prob in trifecta_probs.items():
+        key = tuple(sorted(decode_trifecta(code)))
+        triples[key] = triples.get(key, 0.0) + prob
+    return triples
+
+
+def wide_probabilities(trifecta_probs: dict[int, float]) -> dict[tuple[int, int], float]:
+    """`P(both lanes of the pair finish in the top 3, any order)` -- 拡連複.
+
+    Keyed the same low-high way as `quinella_probabilities`. Three of the
+    15 unordered pairs win on every race (the three pairs drawn from the
+    actual top 3), so unlike 単勝/複勝 this is not a probability
+    distribution over its own outcomes and the 15 values sum to 3.0, not
+    1.0 -- the same reason `top2_probabilities` sums to 2.0.
+    """
+    _validate_trifecta(trifecta_probs)
+    pairs: dict[tuple[int, int], float] = {}
+    for code, prob in trifecta_probs.items():
+        first, second, third = decode_trifecta(code)
+        for a, b in ((first, second), (first, third), (second, third)):
+            key = (min(a, b), max(a, b))
+            pairs[key] = pairs.get(key, 0.0) + prob
+    return pairs

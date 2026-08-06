@@ -389,7 +389,7 @@ class GridCompletenessTest(BetTypeTestBase):
             session.commit()
 
         result = self._evaluate(bet_types=("win",), ev_thresholds=(1.00,))
-        self.assertEqual(result.priced_races["win"], 0)
+        self.assertEqual(result.races_evaluated["win"], 0)
         self.assertEqual(self._rule(result, "win", "ev_all", 1.00).bets, 0)
 
     def test_live_odds_are_not_read_when_asking_for_closing(self) -> None:
@@ -417,9 +417,9 @@ class GridCompletenessTest(BetTypeTestBase):
                 )
             session.commit()
 
-        self.assertEqual(self._evaluate(bet_types=("win",)).priced_races["win"], 0)
+        self.assertEqual(self._evaluate(bet_types=("win",)).races_evaluated["win"], 0)
         self.assertEqual(
-            self._evaluate(bet_types=("win",), is_closing=False).priced_races["win"], 1
+            self._evaluate(bet_types=("win",), is_closing=False).races_evaluated["win"], 1
         )
 
 
@@ -507,7 +507,7 @@ class ReportingTest(BetTypeTestBase):
             self._fill_training(session)
             session.commit()
         result = self._evaluate(bet_types=("win",))
-        self.assertEqual(result.unpriced, ebt.UNPRICED_BET_TYPES)
+        self.assertEqual(result.confidence_only, ebt.CONFIDENCE_ONLY_BET_TYPES)
         for pool in ("拡連複", "３連単", "３連複"):
             self.assertIn(pool, str(result))
 
@@ -555,7 +555,7 @@ class ArgumentValidationTest(BetTypeTestBase):
                 train_end=TRAIN_END,
                 test_start=TEST_START,
                 test_end=TEST_END,
-                bet_types=("trifecta",),
+                bet_types=("sanrentan",),  # not a real key -- "trifecta" is
             )
 
     def test_unknown_second_place_conditional_raises(self) -> None:
@@ -568,6 +568,153 @@ class ArgumentValidationTest(BetTypeTestBase):
                 test_end=TEST_END,
                 second_place="magic",
             )
+
+
+class ConfidenceOnlyPoolsTest(BetTypeTestBase):
+    """3連単/3連複/拡連複 have no odds grid anywhere in this database, so
+    they can only ever run the `confidence` rule. What needs pinning here
+    is the same thing as `SettlementTest` above -- the combination-string
+    mapping -- plus the one thing unique to this trio: no `odds_bet_type`
+    means `evaluate_bet_types` must never try to look one up.
+
+    `_fill_training_lane_ranked` skews P1's marginal win probability
+    strictly descending by lane (1 > 2 > ... > 6). The fixture's
+    identical-card-features training can only reach that through label
+    frequency, not features, but it is enough: Plackett-Luce's most
+    likely full ranking is provably the descending-probability order, so
+    every test race below gets the same, known top pick -- "1-2-3" --
+    regardless of what the race actually did.
+    """
+
+    @staticmethod
+    def _fill_training_lane_ranked(session: Session, base: "ConfidenceOnlyPoolsTest") -> None:
+        weights = [8, 5, 3, 2, 1, 1]  # lane 1..6, sums to 20
+        cycle = [lane for lane, count in zip(range(1, 7), weights) for _ in range(count)]
+        day = TRAIN_START
+        day_index = 0
+        while day <= TRAIN_END:
+            for race_number in range(1, 4):
+                winner = cycle[(day_index * 3 + race_number) % len(cycle)]
+                second = (winner % 6) + 1
+                base._add_race(session, day, race_number, winner=winner, second=second)
+            day += dt.timedelta(days=1)
+            day_index += 1
+
+    def test_trifecta_settles_on_the_ordered_triple(self) -> None:
+        with Session(self.engine) as session:
+            self._fill_training_lane_ranked(session, self)
+            # winner=1, second=2 -> third is the lowest remaining lane, 3
+            # -- matching the model's own top pick under lane-ranked
+            # training, so this is a genuine hit rather than a lucky one.
+            self._add_race(
+                session, TEST_START, 1, winner=1, second=2, payouts=[("３連単", "1-2-3", 12000)]
+            )
+            session.commit()
+
+        result = self._evaluate(bet_types=("trifecta",))
+        rule = self._rule(result, "trifecta", "confidence", 0.00)
+        self.assertEqual(rule.bets, 1)
+        self.assertEqual(rule.hits, 1)
+        self.assertAlmostEqual(rule.returned, 120.0, places=9)
+        self.assertEqual(result.races_evaluated["trifecta"], 1)
+
+    def test_trifecta_and_sanrenpuku_disagree_on_a_reordered_finish(self) -> None:
+        """The model's top pick is always the set {1, 2, 3} in that exact
+        order (descending probability). A race that finishes 3-1-2 shares
+        the *set* but not the *order*: 3連複 (unordered) should still hit,
+        3連単 (ordered) should not. Getting this right is the entire
+        reason the two pools are separate settlement keys."""
+        with Session(self.engine) as session:
+            self._fill_training_lane_ranked(session, self)
+            self._add_race(
+                session,
+                TEST_START,
+                1,
+                winner=3,
+                second=1,
+                payouts=[
+                    ("３連単", "3-1-2", 30000),
+                    ("３連複", "1-2-3", 5000),
+                ],
+            )
+            session.commit()
+
+        result = self._evaluate(bet_types=("trifecta", "sanrenpuku"))
+        self.assertEqual(self._rule(result, "trifecta", "confidence", 0.00).hits, 0)
+        sanrenpuku_rule = self._rule(result, "sanrenpuku", "confidence", 0.00)
+        self.assertEqual(sanrenpuku_rule.hits, 1)
+        self.assertAlmostEqual(sanrenpuku_rule.returned, 50.0, places=9)
+
+    def test_wide_hits_on_any_pair_from_the_actual_top_three(self) -> None:
+        """拡連複 pays three tickets per race -- every pair drawn from the
+        actual top 3, in any order. All three payout rows are provided,
+        matching the real table; whichever pair the model preferred as
+        its top pick must be among them."""
+        with Session(self.engine) as session:
+            self._fill_training_lane_ranked(session, self)
+            self._add_race(
+                session,
+                TEST_START,
+                1,
+                winner=3,
+                second=1,
+                payouts=[
+                    ("拡連複", "1-3", 400),
+                    ("拡連複", "2-3", 900),
+                    ("拡連複", "1-2", 250),
+                ],
+            )
+            session.commit()
+
+        result = self._evaluate(bet_types=("wide",))
+        rule = self._rule(result, "wide", "confidence", 0.00)
+        self.assertEqual(rule.bets, 1)
+        self.assertEqual(rule.hits, 1)
+
+    def test_a_race_with_no_payout_row_for_the_pool_is_not_evaluated(self) -> None:
+        """A race with a card but genuinely no 3連単 settlement (void,
+        cancelled, or simply not captured) must not be silently scored as
+        a loss -- it has to be invisible to the denominator."""
+        with Session(self.engine) as session:
+            self._fill_training_lane_ranked(session, self)
+            self._add_race(session, TEST_START, 1, winner=1, second=2, payouts=[])
+            session.commit()
+
+        result = self._evaluate(bet_types=("trifecta",))
+        self.assertEqual(result.races_evaluated["trifecta"], 0)
+        self.assertEqual(self._rule(result, "trifecta", "confidence", 0.00).bets, 0)
+
+    def test_confidence_only_pools_produce_no_ev_rules(self) -> None:
+        """There is no price to select on, so `evaluate_bet_types` must
+        not silently manufacture an EV number for these pools."""
+        with Session(self.engine) as session:
+            self._fill_training_lane_ranked(session, self)
+            self._add_race(
+                session,
+                TEST_START,
+                1,
+                winner=1,
+                second=2,
+                payouts=[
+                    ("３連単", "1-2-3", 12000),
+                    ("３連複", "1-2-3", 5000),
+                    ("拡連複", "1-2", 250),
+                    ("拡連複", "1-3", 400),
+                    ("拡連複", "2-3", 900),
+                ],
+            )
+            session.commit()
+
+        result = self._evaluate(bet_types=("trifecta", "sanrenpuku", "wide"))
+        ev_rules = [r for r in result.rules if r.rule in ("ev_best", "ev_all")]
+        self.assertEqual(ev_rules, [])
+        confidence_rules = {r.bet_type for r in result.rules if r.rule == "confidence"}
+        self.assertEqual(confidence_rules, {"trifecta", "sanrenpuku", "wide"})
+
+    def test_default_bet_types_include_the_confidence_only_pools(self) -> None:
+        self.assertIn("trifecta", ebt.DEFAULT_BET_TYPES)
+        self.assertIn("sanrenpuku", ebt.DEFAULT_BET_TYPES)
+        self.assertIn("wide", ebt.DEFAULT_BET_TYPES)
 
 
 if __name__ == "__main__":

@@ -15,10 +15,15 @@ import unittest
 
 from boat_prediction.baseline import LANES
 from boat_prediction.combination_model import (
+    ALL_TRIFECTA_COMBINATIONS,
     CombinationModelError,
     PlackettLuceSecondPlace,
+    construct_trifecta_probabilities,
+    decode_trifecta,
     quinella_probabilities,
+    sanrenpuku_probabilities,
     top2_probabilities,
+    wide_probabilities,
 )
 from boat_prediction.exacta import (
     ALL_COMBINATIONS,
@@ -35,6 +40,11 @@ FIRST_PLACE = {1: 0.55, 2: 0.18, 3: 0.12, 4: 0.08, 5: 0.05, 6: 0.02}
 def _joint(first_place=None):
     probs = first_place or FIRST_PLACE
     return construct_exacta_probabilities(probs, PlackettLuceSecondPlace(probs))
+
+
+def _trifecta(first_place=None):
+    probs = first_place or FIRST_PLACE
+    return construct_trifecta_probabilities(_joint(probs), probs)
 
 
 class PlackettLuceSecondPlaceTest(unittest.TestCase):
@@ -161,6 +171,115 @@ class ConsistencyWithLaneFrequencyModelTest(unittest.TestCase):
             PlackettLuceSecondPlace(FIRST_PLACE).predict(1)[6],
             places=3,
         )
+
+
+class TrifectaProbabilitiesTest(unittest.TestCase):
+    def test_has_120_combinations_summing_to_one(self) -> None:
+        trifecta = _trifecta()
+        self.assertEqual(len(trifecta), 120)
+        self.assertAlmostEqual(sum(trifecta.values()), 1.0, places=6)
+
+    def test_marginalizing_out_third_recovers_the_exacta_joint(self) -> None:
+        """The whole point of building this on top of the exacta joint
+        rather than from scratch: the two must never disagree."""
+        joint = _joint()
+        trifecta = construct_trifecta_probabilities(joint, FIRST_PLACE)
+        for code, expected in joint.items():
+            first, second = decode_combination(code)
+            marginal = sum(
+                p
+                for c, p in trifecta.items()
+                if decode_trifecta(c)[0] == first and decode_trifecta(c)[1] == second
+            )
+            self.assertAlmostEqual(marginal, expected, places=9)
+
+    def test_no_position_repeats_a_lane(self) -> None:
+        for code in ALL_TRIFECTA_COMBINATIONS:
+            first, second, third = decode_trifecta(code)
+            self.assertEqual(len({first, second, third}), 3)
+
+    def test_rejects_an_exacta_joint_missing_combinations(self) -> None:
+        joint = _joint()
+        del joint[12]
+        with self.assertRaises(CombinationModelError):
+            construct_trifecta_probabilities(joint, FIRST_PLACE)
+
+    def test_rejects_first_place_probabilities_missing_a_lane(self) -> None:
+        with self.assertRaises(CombinationModelError):
+            construct_trifecta_probabilities(_joint(), {1: 0.6, 2: 0.4})
+
+    def test_near_certain_top_two_falls_back_to_uniform_third(self) -> None:
+        """`1 - p_i - p_j` too small to divide by must not produce a
+        conditional made of floating-point noise, same as the second-place
+        fallback."""
+        certain = {1: 0.5, 2: 0.5, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0}
+        joint = construct_exacta_probabilities(certain, PlackettLuceSecondPlace(certain))
+        trifecta = construct_trifecta_probabilities(joint, certain)
+        third_given_1_2 = {
+            decode_trifecta(c)[2]: p
+            for c, p in trifecta.items()
+            if decode_trifecta(c)[0] == 1 and decode_trifecta(c)[1] == 2
+        }
+        for lane in (3, 4, 5, 6):
+            self.assertAlmostEqual(third_given_1_2[lane] / joint[12], 0.25, places=6)
+
+    def test_decode_rejects_a_code_outside_the_valid_120(self) -> None:
+        with self.assertRaises(CombinationModelError):
+            decode_trifecta(111)  # repeats lane 1 in every position
+
+
+class SanrenpukuProbabilitiesTest(unittest.TestCase):
+    def test_has_twenty_unordered_triples_summing_to_one(self) -> None:
+        triples = sanrenpuku_probabilities(_trifecta())
+        self.assertEqual(len(triples), 20)
+        self.assertAlmostEqual(sum(triples.values()), 1.0, places=6)
+
+    def test_keys_are_ascending_to_match_the_payout_table(self) -> None:
+        for low, mid, high in sanrenpuku_probabilities(_trifecta()):
+            self.assertLess(low, mid)
+            self.assertLess(mid, high)
+
+    def test_triple_is_the_sum_of_all_six_orderings(self) -> None:
+        trifecta = _trifecta()
+        triples = sanrenpuku_probabilities(trifecta)
+        orderings = [
+            trifecta[code]
+            for code in ALL_TRIFECTA_COMBINATIONS
+            if set(decode_trifecta(code)) == {1, 2, 3}
+        ]
+        self.assertEqual(len(orderings), 6)
+        self.assertAlmostEqual(triples[(1, 2, 3)], sum(orderings), places=9)
+
+    def test_rejects_a_trifecta_missing_combinations(self) -> None:
+        trifecta = _trifecta()
+        del trifecta[123]
+        with self.assertRaises(CombinationModelError):
+            sanrenpuku_probabilities(trifecta)
+
+
+class WideProbabilitiesTest(unittest.TestCase):
+    def test_has_fifteen_pairs_summing_to_three(self) -> None:
+        """Three of the fifteen pairs win on every race (the pairs drawn
+        from the actual top 3), so the total is 3.0, not 1.0."""
+        pairs = wide_probabilities(_trifecta())
+        self.assertEqual(len(pairs), 15)
+        self.assertAlmostEqual(sum(pairs.values()), 3.0, places=6)
+
+    def test_pair_probability_is_at_least_the_quinella_probability(self) -> None:
+        """Finishing 1-2 in either order is one of the ways a pair can
+        both land in the top 3, so wide can only be the larger number."""
+        joint = _joint()
+        trifecta = construct_trifecta_probabilities(joint, FIRST_PLACE)
+        wide = wide_probabilities(trifecta)
+        quinella = quinella_probabilities(joint)
+        for pair in quinella:
+            self.assertGreaterEqual(wide[pair] + 1e-12, quinella[pair])
+
+    def test_rejects_a_trifecta_missing_combinations(self) -> None:
+        trifecta = _trifecta()
+        del trifecta[123]
+        with self.assertRaises(CombinationModelError):
+            wide_probabilities(trifecta)
 
 
 if __name__ == "__main__":
