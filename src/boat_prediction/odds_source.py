@@ -207,21 +207,25 @@ class KeepAliveSession:
     two methods, so it drops in as `fetch_range`/`fetch_trifecta_family_range`'s
     default opener with no change to `_fetch` itself.
 
-    Why this exists: measured live against boatrace.jp (tasks/CURRENT.md,
-    2026-08-06), a fresh `urllib.request.urlopen` call -- which opens a new
-    TCP connection and repeats the full TLS handshake every time -- took
-    ~10-13s per request, on `.21` and on two separate VPS hosts alike (so
-    this is inherent to the no-reuse request pattern, not one machine's
-    network). A held-open HTTP/1.1 connection amortizes that handshake
-    over every subsequent request to the same host, which is the entire
-    difference between a 263-day archive fetch taking ~16 days and taking
-    a few.
+    What this does and does not fix: each request to boatrace.jp measured
+    ~9-13s live (tasks/CURRENT.md, 2026-08-06), on `.21` and on two
+    separate VPS hosts alike. A per-request timing breakdown
+    (`curl -w`) showed TCP connect + TLS handshake at ~40ms combined --
+    the ~9s is server response time (time to first byte), not connection
+    setup. So reusing a connection saves that ~40ms and one fewer socket
+    opened per request; it is **not** a meaningful fix for the actual
+    bottleneck, and a 263-day archive fetch is still on the order of
+    ~16 days on one host either way. Kept because it is a real, harmless
+    saving and reduces the number of connections opened against a site
+    whose policy asks for restraint -- not because it changes the
+    schedule. The only lever that does is running fewer requests per host
+    at once, i.e. splitting the date range across hosts.
 
     `fetch_odds_page`/`fetch_exacta_odds_page`/etc. (single-shot calls
     `db.capture_odds` makes minutes apart while betting is still open)
     deliberately keep their own per-call default instead -- a connection
-    held open across a 10-minute gap between reads has nothing to
-    amortize and is one more long-lived thing that can go stale.
+    held open across a 10-minute gap between reads has nothing to save
+    and is one more long-lived thing that can go stale.
     """
 
     def __init__(self, timeout: float = 20.0) -> None:
@@ -658,10 +662,11 @@ def fetch_range(
     interruption. Returns the number of pages newly written.
 
     When `opener` is not given, requests go through a `KeepAliveSession`
-    held open for this call's whole duration -- see that class for why
-    (measured live: this is a 2-3x wall-clock difference on a run this
-    size, not a micro-optimization). Passing an explicit `opener` (tests
-    do) skips this entirely.
+    held open for this call's whole duration -- a small, real saving
+    (avoids one TCP+TLS setup per request), not a fix for this run's
+    actual bottleneck, which is boatrace.jp's own response time; see
+    `KeepAliveSession` for the measurement behind that distinction.
+    Passing an explicit `opener` (tests do) skips this entirely.
     """
     if delay_seconds < 1.0:
         raise OddsSourceError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
