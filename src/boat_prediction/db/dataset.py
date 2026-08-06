@@ -39,6 +39,12 @@ Rows the target cannot describe
 Each exclusion is counted in `DatasetStats` so a shrinking dataset is
 visible rather than silent.
 
+`y_second` is carried beside `y` for the combination bets (複勝/2連単/
+2連複), and is the one target here that may be `None` rather than an
+exclusion: a race can produce a clean winner and a 同着 for second. The
+first-place dataset must not shrink to accommodate that, so the row
+stays and the second-place label is absent.
+
 Within-meeting form
 --------------------
 
@@ -273,6 +279,17 @@ class Dataset:
     neither of which is possible from `(X, y, dates)` alone, which is why
     every ROI figure before `evaluate_p2` came from a throwaway script."""
 
+    y_second: list[int | None] = field(default_factory=list)
+    """Second-place lane, row-aligned with `y`, or None where the race
+    produced no single second (a dead heat for 2nd, or a race that
+    settled a winner but no runner-up).
+
+    Deliberately nullable rather than an exclusion criterion: `y` is the
+    P1 target and dropping a race here would silently shrink the
+    first-place dataset to suit a downstream model. A consumer that needs
+    a clean pair filters on its own -- `combination_model` does -- and the
+    P1 numbers already published stay reproducible."""
+
     def __len__(self) -> int:
         return len(self.y)
 
@@ -472,7 +489,13 @@ _TARGET_COLUMNS = """,
         WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_count,
        (SELECT min(re.lane_number) FROM race_result_entries re
          JOIN race_results res ON res.id = re.race_result_id
-        WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_lane
+        WHERE res.race_id = r.id AND re.finish_position = 1) AS winner_lane,
+       (SELECT count(*) FROM race_result_entries re
+         JOIN race_results res ON res.id = re.race_result_id
+        WHERE res.race_id = r.id AND re.finish_position = 2) AS second_count,
+       (SELECT min(re.lane_number) FROM race_result_entries re
+         JOIN race_results res ON res.id = re.race_result_id
+        WHERE res.race_id = r.id AND re.finish_position = 2) AS second_lane
 """
 
 _FROM = """
@@ -720,6 +743,7 @@ def build_dataset(
     dates: list[dt.date] = []
     phases: list[str] = []
     race_ids: list = []
+    y_second: list[int | None] = []
 
     current_race = None
     lanes: dict[int, list[float] | None] = {}
@@ -730,11 +754,13 @@ def build_dataset(
     seeded = False
     winner_count = 0
     winner_lane = None
+    second_count = 0
+    second_lane = None
     too_late = False
 
     def flush() -> None:
         nonlocal lanes, before_info, lane_rows, race_date, race_phase, seeded
-        nonlocal winner_count, winner_lane, too_late
+        nonlocal winner_count, winner_lane, second_count, second_lane, too_late
         if current_race is None:
             return
         stats.races_considered += 1
@@ -764,6 +790,13 @@ def build_dataset(
             dates.append(race_date)
             phases.append(race_phase)
             race_ids.append(current_race)
+            # A second place is only usable when exactly one boat holds
+            # it; 同着 for 2nd is real (the archive has them) and there is
+            # no non-arbitrary way to pick one, so it is recorded as
+            # absent rather than resolved.
+            y_second.append(
+                int(second_lane) if second_count == 1 and second_lane is not None else None
+            )
             stats.races_used += 1
         lanes = {}
         before_info = {}
@@ -792,6 +825,8 @@ def build_dataset(
             seeded = is_standing_seeded(row.race_class)
             winner_count = int(row.winner_count or 0)
             winner_lane = row.winner_lane
+            second_count = int(row.second_count or 0)
+            second_lane = row.second_lane
         if row.too_late:
             too_late = True
         lane_number = int(row.lane_number)
@@ -820,6 +855,7 @@ def build_dataset(
         ),
         stats=stats,
         race_ids=race_ids,
+        y_second=y_second,
     )
 
 
