@@ -6,10 +6,10 @@
 - Status: B/K-file 21-year load **complete** on 192.168.11.21
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
-- Last handoff: new 予想結果レポート page (`results.php`) built, tested, and
-  **deployed to `.21`** (2026-08-04) -- live at
-  `https://boat.internal/results.php`, cron-refreshed every 10 min
-  07-23 JST. See the dated section below.
+- Last handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
+  extended to all seven pools and run against real data on `.21`
+  (2026-08-06) -- 複勝 clears breakeven under EV selection more strongly
+  than 単勝. See the dated section below.
 
 ## Runtime target: 192.168.11.21 (`boat.internal`)
 
@@ -882,6 +882,67 @@ describes doing by hand. The script itself is unchanged and should run
 fine from cron, which isn't subject to this session's interactive
 classifier.
 
+## Per-bet-type EV evaluation: 複勝 beats 単勝, three pools have no price to test (2026-08-06)
+
+User question: rather than a per-race ¥10,000 budget across bet types
+(rejected — staking multiplies EV, it does not create it, and with
+takeout at ~25% an optimizer over a fixed budget just finds whichever
+combination happened to win in the window it was shown), measure each
+of the seven pools' own EV-selection question separately at a fixed
+¥100 stake, the same question `evaluate_p2` had only ever asked of 単勝.
+
+**New**: `combination_model.py` derives 複勝/2連単/2連複/3連単/3連複/拡連複
+probabilities from the *same* P1 first-place distribution rather than
+fitting a separate model per pool — every pool is a marginal of one
+coherent joint (30-class exacta, extended to 120-class trifecta by one
+more Plackett-Luce step, `P(third=k|i,j) = p_k/(1-p_i-p_j)`), so the
+pools cannot disagree with each other. `db/evaluate_bet_types.py` runs
+confidence/`ev_best`/`ev_all` per pool, settled at real payouts; the
+three pools with no odds grid in this database (3連単/3連複/拡連複) get
+`confidence` only — there is no price to select on, so no EV number is
+fabricated for them. 59 new tests, 928/928 total, 0 regressions.
+
+**単勝/複勝** (closing odds, 2025-07-29..2026-04-17, 38,766 test races,
+train 2023-01-01..2025-07-28):
+
+| pool | rule | thresh | hit | ROI | trimmed |
+|---|---|---|---|---|---|
+| 単勝 | confidence | — | 56.80% | 0.9075 | 0.9026 |
+| 単勝 | ev_best | 1.5 | 11.49% | 1.3415 | **1.1972** |
+| 複勝 | confidence | — | 74.66% | 0.9410 | 0.9319 |
+| 複勝 | ev_best | 1.0 | 42.35% | 1.3684 | **1.3347** |
+| 複勝 | ev_best | 1.5 | 30.14% | 1.9854 | **1.8204** |
+
+複勝 is a genuinely new result, not previously measured: EV selection
+clears breakeven more strongly than 単勝 does at every threshold, even
+after the top-10-payout trim. It combines 単勝's finding (confidence
+selection is priced in, EV selection is not) with a much higher hit
+rate (backing top-2 rather than top-1), which is exactly the combination
+that would make it more bettable in practice — fewer of the very long
+tail outcomes an EV rule chases.
+
+**2連単/2連複** (live pre-deadline capture, 2026-08-03..08-06, only
+302/264 test races — this is the entire capture window so far):
+inconclusive. No threshold clears breakeven on `ev_best`; `ev_all`
+edges past 1.0 at a couple of thresholds but the trimmed figures
+collapse to 0.0–0.5, meaning a handful of hits carry the whole result.
+Needs months, not days, before this is a real answer — the same
+maturation win/複勝 already had from the archived odds.
+
+**3連単/3連複/拡連複** (confidence only, no odds grid exists — same
+window as 単勝/複勝, ~38,700 races each): all three land where 単勝's
+confidence rule already landed, at the takeout — 0.7861 / 0.7818 /
+0.8271. Consistent with "confidence selection is priced in," now
+extended to combination bets, but this says nothing about whether *EV*
+selection would work there too, because there is no price to test it
+against. Fetching a grid for these three has never been run (same
+large-volume-access reasoning that has kept 直前情報 and the wider odds
+archive staged rather than fully backfilled) and is not proposed here —
+複勝's result is the more promising lead to chase forward first.
+
+Still closing prices nobody can bet at for 単勝/複勝, and still no
+out-of-sample confirmation for any of this. See tasks/HANDOFF.md.
+
 ## Next, in order
 
 Reordered 2026-08-01 after a day of measurement against real data. See
@@ -920,6 +981,13 @@ tasks/HANDOFF.md for the evidence behind each line.
    window with no out-of-sample, thresholds picked after looking, and
    the trimmed figure is a tail-dependence test rather than an
    expectation. The forward capture is the only real test.
+
+   **2026-08-06: extended to all seven pools, not just 単勝** (see the
+   dated section above). 複勝 now clears breakeven more strongly than
+   単勝 at every EV threshold (trimmed 1.8204 @1.5 vs 単勝's 1.1972) —
+   the most promising single number this line item has produced, and
+   worth prioritizing over widening 2連単/2連複 coverage or fetching a
+   grid for 3連単/3連複/拡連複.
 3. ~~**Wire the per-course stats into the dataset**~~ — **done
    2026-08-03.** `dataset.include_racer_stats` joins
    `racer_period_course_stats` on the course actually taken
