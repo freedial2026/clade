@@ -36,8 +36,10 @@ Requires the `official-data` extra (`beautifulsoup4`).
 from __future__ import annotations
 
 import argparse
+import http.client
 import re
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date
@@ -178,6 +180,93 @@ def _fetch(url: str, opener: object | None) -> str:
             raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
         except Exception as exc:
             raise OddsSourceError(f"failed to fetch {url}: {exc}") from exc
+
+
+class _KeepAliveResponse:
+    """Wraps an `http.client.HTTPResponse` in `_fetch`'s expected shape
+    (`.read()`, context manager) so it is interchangeable with what
+    `urllib.request.urlopen` returns."""
+
+    def __init__(self, response: http.client.HTTPResponse) -> None:
+        self._response = response
+
+    def read(self) -> bytes:
+        return self._response.read()
+
+    def __enter__(self) -> "_KeepAliveResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class KeepAliveSession:
+    """One persistent HTTPS connection per host, reused across many
+    requests -- `_fetch`'s `opener` duck-types `urllib.request` (a
+    `Request` constructor plus `urlopen`), and this implements the same
+    two methods, so it drops in as `fetch_range`/`fetch_trifecta_family_range`'s
+    default opener with no change to `_fetch` itself.
+
+    Why this exists: measured live against boatrace.jp (tasks/CURRENT.md,
+    2026-08-06), a fresh `urllib.request.urlopen` call -- which opens a new
+    TCP connection and repeats the full TLS handshake every time -- took
+    ~10-13s per request, on `.21` and on two separate VPS hosts alike (so
+    this is inherent to the no-reuse request pattern, not one machine's
+    network). A held-open HTTP/1.1 connection amortizes that handshake
+    over every subsequent request to the same host, which is the entire
+    difference between a 263-day archive fetch taking ~16 days and taking
+    a few.
+
+    `fetch_odds_page`/`fetch_exacta_odds_page`/etc. (single-shot calls
+    `db.capture_odds` makes minutes apart while betting is still open)
+    deliberately keep their own per-call default instead -- a connection
+    held open across a 10-minute gap between reads has nothing to
+    amortize and is one more long-lived thing that can go stale.
+    """
+
+    def __init__(self, timeout: float = 20.0) -> None:
+        self._timeout = timeout
+        self._connections: dict[str, http.client.HTTPSConnection] = {}
+
+    def Request(self, url: str, headers: dict | None = None) -> tuple[str, dict]:
+        return (url, headers or {})
+
+    def _connect(self, host: str) -> http.client.HTTPSConnection:
+        connection = http.client.HTTPSConnection(host, timeout=self._timeout)
+        self._connections[host] = connection
+        return connection
+
+    def urlopen(self, request: tuple[str, dict], timeout: float | None = None) -> _KeepAliveResponse:
+        url, headers = request
+        parts = urllib.parse.urlsplit(url)
+        host = parts.netloc
+        path = parts.path + (f"?{parts.query}" if parts.query else "")
+        connection = self._connections.get(host) or self._connect(host)
+        try:
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+        except (http.client.HTTPException, OSError):
+            # The held-open connection went stale (the far end closed an
+            # idle keep-alive, most likely) -- reconnect once rather than
+            # letting `_fetch`'s own retry loop burn all its attempts on
+            # a connection that will never recover on its own.
+            connection.close()
+            connection = self._connect(host)
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+        return _KeepAliveResponse(response)
+
+    def close(self) -> None:
+        for connection in self._connections.values():
+            connection.close()
+        self._connections.clear()
+
+    def __enter__(self) -> "KeepAliveSession":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self.close()
+        return False
 
 
 def fetch_odds_page(
@@ -566,7 +655,14 @@ def fetch_range(
     """Fetch closing-odds pages for every racing venue/race in the date
     range, saving raw HTML to dest_dir/{YYYYMMDD}/{venue}_{race}.html.
     Idempotent: existing files are skipped, so a run can resume after
-    interruption. Returns the number of pages newly written."""
+    interruption. Returns the number of pages newly written.
+
+    When `opener` is not given, requests go through a `KeepAliveSession`
+    held open for this call's whole duration -- see that class for why
+    (measured live: this is a 2-3x wall-clock difference on a run this
+    size, not a micro-optimization). Passing an explicit `opener` (tests
+    do) skips this entirely.
+    """
     if delay_seconds < 1.0:
         raise OddsSourceError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
     if start_date < EARLIEST_RETAINED_DATE:
@@ -577,33 +673,41 @@ def fetch_range(
     if end_date < start_date:
         raise OddsSourceError(f"end_date {end_date} precedes start_date {start_date}")
 
-    written = 0
-    current = start_date
-    while current <= end_date:
-        day_dir = dest_dir / current.strftime("%Y%m%d")
-        venues_marker = day_dir / "_venues.txt"
+    session = KeepAliveSession() if opener is None else None
+    opener = opener or session
+    try:
+        written = 0
+        current = start_date
+        while current <= end_date:
+            day_dir = dest_dir / current.strftime("%Y%m%d")
+            venues_marker = day_dir / "_venues.txt"
 
-        if venues_marker.exists():
-            venues = tuple(v for v in venues_marker.read_text(encoding="utf-8").split() if v)
-        else:
-            venues = fetch_racing_venues(current, opener=opener)
-            sleep(delay_seconds)
-            day_dir.mkdir(parents=True, exist_ok=True)
-            venues_marker.write_text("\n".join(venues), encoding="utf-8")
-
-        for venue_code in venues:
-            for race_number in range(1, 13):
-                dest_path = day_dir / f"{venue_code}_{race_number:02d}.html"
-                if dest_path.exists():
-                    continue
-                html = _fetch(odds_url(current, venue_code, race_number), opener=opener)
-                dest_path.write_text(html, encoding="utf-8")
-                written += 1
+            if venues_marker.exists():
+                venues = tuple(
+                    v for v in venues_marker.read_text(encoding="utf-8").split() if v
+                )
+            else:
+                venues = fetch_racing_venues(current, opener=opener)
                 sleep(delay_seconds)
+                day_dir.mkdir(parents=True, exist_ok=True)
+                venues_marker.write_text("\n".join(venues), encoding="utf-8")
 
-        log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
-        current = date.fromordinal(current.toordinal() + 1)
-    return written
+            for venue_code in venues:
+                for race_number in range(1, 13):
+                    dest_path = day_dir / f"{venue_code}_{race_number:02d}.html"
+                    if dest_path.exists():
+                        continue
+                    html = _fetch(odds_url(current, venue_code, race_number), opener=opener)
+                    dest_path.write_text(html, encoding="utf-8")
+                    written += 1
+                    sleep(delay_seconds)
+
+            log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
+            current = date.fromordinal(current.toordinal() + 1)
+        return written
+    finally:
+        if session is not None:
+            session.close()
 
 
 _TRIFECTA_FAMILY_PAGES: tuple[tuple[str, object], ...] = (
@@ -639,6 +743,10 @@ def fetch_trifecta_family_range(
     against the same directory a win/place fetch already populated skips
     the redundant venue-discovery request rather than repeating it.
 
+    Same `KeepAliveSession`-by-default behavior as `fetch_range` when
+    `opener` is not given -- see that function's docstring and
+    `KeepAliveSession` itself.
+
     Returns the number of pages newly written.
     """
     if delay_seconds < 1.0:
@@ -651,34 +759,42 @@ def fetch_trifecta_family_range(
     if end_date < start_date:
         raise OddsSourceError(f"end_date {end_date} precedes start_date {start_date}")
 
-    written = 0
-    current = start_date
-    while current <= end_date:
-        day_dir = dest_dir / current.strftime("%Y%m%d")
-        venues_marker = day_dir / "_venues.txt"
+    session = KeepAliveSession() if opener is None else None
+    opener = opener or session
+    try:
+        written = 0
+        current = start_date
+        while current <= end_date:
+            day_dir = dest_dir / current.strftime("%Y%m%d")
+            venues_marker = day_dir / "_venues.txt"
 
-        if venues_marker.exists():
-            venues = tuple(v for v in venues_marker.read_text(encoding="utf-8").split() if v)
-        else:
-            venues = fetch_racing_venues(current, opener=opener)
-            sleep(delay_seconds)
-            day_dir.mkdir(parents=True, exist_ok=True)
-            venues_marker.write_text("\n".join(venues), encoding="utf-8")
+            if venues_marker.exists():
+                venues = tuple(
+                    v for v in venues_marker.read_text(encoding="utf-8").split() if v
+                )
+            else:
+                venues = fetch_racing_venues(current, opener=opener)
+                sleep(delay_seconds)
+                day_dir.mkdir(parents=True, exist_ok=True)
+                venues_marker.write_text("\n".join(venues), encoding="utf-8")
 
-        for venue_code in venues:
-            for race_number in range(1, 13):
-                for page_name, url_fn in _TRIFECTA_FAMILY_PAGES:
-                    dest_path = day_dir / f"{venue_code}_{race_number:02d}_{page_name}.html"
-                    if dest_path.exists():
-                        continue
-                    html = _fetch(url_fn(current, venue_code, race_number), opener=opener)
-                    dest_path.write_text(html, encoding="utf-8")
-                    written += 1
-                    sleep(delay_seconds)
+            for venue_code in venues:
+                for race_number in range(1, 13):
+                    for page_name, url_fn in _TRIFECTA_FAMILY_PAGES:
+                        dest_path = day_dir / f"{venue_code}_{race_number:02d}_{page_name}.html"
+                        if dest_path.exists():
+                            continue
+                        html = _fetch(url_fn(current, venue_code, race_number), opener=opener)
+                        dest_path.write_text(html, encoding="utf-8")
+                        written += 1
+                        sleep(delay_seconds)
 
-        log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
-        current = date.fromordinal(current.toordinal() + 1)
-    return written
+            log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
+            current = date.fromordinal(current.toordinal() + 1)
+        return written
+    finally:
+        if session is not None:
+            session.close()
 
 
 def _main(argv: list[str] | None = None) -> int:

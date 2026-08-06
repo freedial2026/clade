@@ -1,7 +1,9 @@
+import http.client
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from boat_prediction.odds_source import (
     EARLIEST_RETAINED_DATE,
@@ -10,6 +12,7 @@ from boat_prediction.odds_source import (
     SANRENPUKU_BET_TYPE,
     TRIFECTA_BET_TYPE,
     WIDE_BET_TYPE,
+    KeepAliveSession,
     OddsSourceError,
     exacta_odds_url,
     fetch_racing_venues,
@@ -458,6 +461,158 @@ class FetchTrifectaFamilyRangeTest(unittest.TestCase):
             index_requests_after = sum(1 for r in opener.requests if "race/index" in r)
 
             self.assertEqual(index_requests_after, index_requests_before)
+
+
+class KeepAliveSessionTest(unittest.TestCase):
+    """No real network: `http.client.HTTPSConnection` is mocked, so this
+    tests the reuse/reconnect *policy*, not connectivity.
+
+    Measured live against boatrace.jp (tasks/CURRENT.md, 2026-08-06): a
+    fresh connection per request -- what `urllib.request.urlopen` does by
+    default -- cost ~10-13s a request, on `.21` and two separate VPS
+    hosts alike. This class exists to amortize that handshake across many
+    requests to the same host, so the property that actually matters is
+    "one connection object, reused" -- not any particular HTTP detail.
+    """
+
+    @staticmethod
+    def _mock_connection(body: bytes = b"<html>ok</html>") -> MagicMock:
+        connection = MagicMock()
+        response = MagicMock()
+        response.read.return_value = body
+        connection.getresponse.return_value = response
+        return connection
+
+    def test_reuses_the_same_connection_for_the_same_host(self) -> None:
+        connection = self._mock_connection()
+        with patch(
+            "boat_prediction.odds_source.http.client.HTTPSConnection",
+            return_value=connection,
+        ) as ctor:
+            session = KeepAliveSession()
+            session.urlopen(session.Request("https://www.boatrace.jp/a"))
+            session.urlopen(session.Request("https://www.boatrace.jp/b"))
+            session.close()
+
+        ctor.assert_called_once()
+        self.assertEqual(connection.request.call_count, 2)
+
+    def test_opens_a_separate_connection_per_host(self) -> None:
+        with patch(
+            "boat_prediction.odds_source.http.client.HTTPSConnection",
+            side_effect=lambda host, timeout: self._mock_connection(),
+        ) as ctor:
+            session = KeepAliveSession()
+            session.urlopen(session.Request("https://www.boatrace.jp/a"))
+            session.urlopen(session.Request("https://other.example.com/b"))
+            session.close()
+
+        self.assertEqual(ctor.call_count, 2)
+
+    def test_a_stale_connection_reconnects_once_rather_than_raising(self) -> None:
+        broken = MagicMock()
+        broken.request.side_effect = http.client.RemoteDisconnected("closed")
+        healthy = self._mock_connection()
+        with patch(
+            "boat_prediction.odds_source.http.client.HTTPSConnection",
+            side_effect=[broken, healthy],
+        ):
+            session = KeepAliveSession()
+            html = session.urlopen(session.Request("https://www.boatrace.jp/a")).read()
+
+        self.assertEqual(html, b"<html>ok</html>")
+        healthy.request.assert_called_once()
+        broken.close.assert_called_once()
+
+    def test_close_closes_every_held_connection(self) -> None:
+        a = self._mock_connection()
+        b = self._mock_connection()
+        with patch(
+            "boat_prediction.odds_source.http.client.HTTPSConnection", side_effect=[a, b]
+        ):
+            session = KeepAliveSession()
+            session.urlopen(session.Request("https://www.boatrace.jp/x"))
+            session.urlopen(session.Request("https://other.example.com/y"))
+            session.close()
+
+        a.close.assert_called_once()
+        b.close.assert_called_once()
+
+    def test_is_a_context_manager_that_closes_on_exit(self) -> None:
+        connection = self._mock_connection()
+        with patch(
+            "boat_prediction.odds_source.http.client.HTTPSConnection",
+            return_value=connection,
+        ):
+            with KeepAliveSession() as session:
+                session.urlopen(session.Request("https://www.boatrace.jp/x"))
+
+        connection.close.assert_called_once()
+
+
+class BulkFetchDefaultsToKeepAliveTest(unittest.TestCase):
+    """The actual point of adding `KeepAliveSession`: a bulk fetch called
+    with no `opener` must not silently fall back to a fresh connection
+    per request the way it did before."""
+
+    @staticmethod
+    def _mock_connection() -> MagicMock:
+        connection = MagicMock()
+        response = MagicMock()
+        response.read.return_value = SAMPLE_INDEX_HTML.encode("utf-8")
+        connection.getresponse.return_value = response
+        return connection
+
+    def test_fetch_range_reuses_one_connection_for_the_whole_run(self) -> None:
+        connection = self._mock_connection()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "boat_prediction.odds_source.http.client.HTTPSConnection",
+                return_value=connection,
+            ) as ctor,
+        ):
+            fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), Path(tmp),
+                sleep=lambda s: None, log=lambda m: None,
+            )
+
+        # One connection object for the index request plus every venue's
+        # 12 races -- never recreated per request.
+        ctor.assert_called_once()
+        connection.close.assert_called_once()
+
+    def test_fetch_trifecta_family_range_reuses_one_connection(self) -> None:
+        connection = self._mock_connection()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "boat_prediction.odds_source.http.client.HTTPSConnection",
+                return_value=connection,
+            ) as ctor,
+        ):
+            fetch_trifecta_family_range(
+                date(2026, 6, 1), date(2026, 6, 1), Path(tmp),
+                sleep=lambda s: None, log=lambda m: None,
+            )
+
+        ctor.assert_called_once()
+        connection.close.assert_called_once()
+
+    def test_an_explicit_opener_bypasses_keep_alive_entirely(self) -> None:
+        """Existing test-double `opener`s (FakeOpener, throughout this
+        file) must keep working exactly as before -- this is what proves
+        it: HTTPSConnection is never touched when an opener is supplied."""
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("boat_prediction.odds_source.http.client.HTTPSConnection") as ctor,
+        ):
+            fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), Path(tmp),
+                opener=FakeOpener(), sleep=lambda s: None, log=lambda m: None,
+            )
+
+        ctor.assert_not_called()
 
 
 class UnquotableOddsTest(unittest.TestCase):
