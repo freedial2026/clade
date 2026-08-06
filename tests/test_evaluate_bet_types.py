@@ -373,9 +373,11 @@ class SettlementTest(BetTypeTestBase):
 
 
 class GridCompletenessTest(BetTypeTestBase):
-    def test_race_with_a_partial_odds_grid_is_not_evaluated(self) -> None:
+    def test_race_with_a_partial_odds_grid_skips_ev_but_not_confidence(self) -> None:
         """Selecting from a subset of the pool would bias the rule toward
-        whatever happened to be captured, so the race is skipped."""
+        whatever happened to be captured, so EV skips the race entirely --
+        but confidence needs no price at all, so it must still fire (the
+        payout is real regardless of how much of the grid was seen)."""
         with Session(self.engine) as session:
             self._fill_training(session)
             self._add_race(
@@ -389,8 +391,10 @@ class GridCompletenessTest(BetTypeTestBase):
             session.commit()
 
         result = self._evaluate(bet_types=("win",), ev_thresholds=(1.00,))
-        self.assertEqual(result.races_evaluated["win"], 0)
+        self.assertEqual(result.races_evaluated["win"], 1)
+        self.assertEqual(self._rule(result, "win", "confidence", 0.00).bets, 1)
         self.assertEqual(self._rule(result, "win", "ev_all", 1.00).bets, 0)
+        self.assertIn("win", result.no_ev_data)
 
     def test_live_odds_are_not_read_when_asking_for_closing(self) -> None:
         with Session(self.engine) as session:
@@ -409,7 +413,7 @@ class GridCompletenessTest(BetTypeTestBase):
                         race_id=race.id,
                         bet_type="win",
                         combination=str(lane),
-                        odds=2.0,
+                        odds=12.0,
                         observed_at=deadline,
                         available_at=deadline,
                         is_closing=False,
@@ -417,10 +421,16 @@ class GridCompletenessTest(BetTypeTestBase):
                 )
             session.commit()
 
-        self.assertEqual(self._evaluate(bet_types=("win",)).races_evaluated["win"], 0)
-        self.assertEqual(
-            self._evaluate(bet_types=("win",), is_closing=False).races_evaluated["win"], 1
+        # Confidence fires either way (it never looks at the market), but
+        # EV must only see the live grid when explicitly asked for it.
+        closing_result = self._evaluate(bet_types=("win",), ev_thresholds=(1.00,))
+        self.assertEqual(closing_result.races_evaluated["win"], 1)
+        self.assertEqual(self._rule(closing_result, "win", "ev_all", 1.00).bets, 0)
+
+        live_result = self._evaluate(
+            bet_types=("win",), ev_thresholds=(1.00,), is_closing=False
         )
+        self.assertGreater(self._rule(live_result, "win", "ev_all", 1.00).bets, 0)
 
 
 class SecondPlaceComparisonTest(BetTypeTestBase):
@@ -502,14 +512,32 @@ class SecondPlaceComparisonTest(BetTypeTestBase):
 
 
 class ReportingTest(BetTypeTestBase):
-    def test_unpriced_pools_are_named_rather_than_omitted(self) -> None:
+    def test_pools_with_no_priced_candidates_are_named_rather_than_omitted(self) -> None:
+        """`no_ev_data` is computed from the actual rules, not a hardcoded
+        list -- a pool with real odds in this run (単勝) must not appear,
+        and one without (トリフェクタ) must, by name, in the string form
+        too rather than silently vanishing."""
         with Session(self.engine) as session:
             self._fill_training(session)
+            self._add_race(
+                session,
+                TEST_START,
+                1,
+                winner=1,
+                second=2,
+                win_odds={lane: 12.0 for lane in range(1, 7)},
+                payouts=[("単勝", "1", 1200), ("３連単", "1-2-3", 12000)],
+            )
             session.commit()
-        result = self._evaluate(bet_types=("win",))
-        self.assertEqual(result.confidence_only, ebt.CONFIDENCE_ONLY_BET_TYPES)
-        for pool in ("拡連複", "３連単", "３連複"):
-            self.assertIn(pool, str(result))
+
+        result = self._evaluate(bet_types=("win", "trifecta"), ev_thresholds=(1.00,))
+
+        self.assertNotIn("win", result.no_ev_data)
+        self.assertIn("trifecta", result.no_ev_data)
+        self.assertIn("trifecta", str(result))
+        # win did get a priced EV bet, so it must not appear even though
+        # its key string would otherwise be a plausible false positive.
+        self.assertGreater(self._rule(result, "win", "ev_all", 1.00).bets, 0)
 
     def test_bets_per_race_and_staked_yen_expose_the_budget(self) -> None:
         with Session(self.engine) as session:
@@ -571,11 +599,13 @@ class ArgumentValidationTest(BetTypeTestBase):
 
 
 class ConfidenceOnlyPoolsTest(BetTypeTestBase):
-    """3連単/3連複/拡連複 have no odds grid anywhere in this database, so
-    they can only ever run the `confidence` rule. What needs pinning here
-    is the same thing as `SettlementTest` above -- the combination-string
-    mapping -- plus the one thing unique to this trio: no `odds_bet_type`
-    means `evaluate_bet_types` must never try to look one up.
+    """3連単/3連複/拡連複 as of this fixture have no captured odds, which
+    is a fact about the test data, not a permanent property of the code
+    -- `evaluate_bet_types` treats every pool identically and simply
+    finds nothing to price for these three unless a test adds some (see
+    `AutomaticEvSelectionTest` below for the case where it does). What
+    needs pinning here is the same thing as `SettlementTest` above -- the
+    combination-string mapping.
 
     `_fill_training_lane_ranked` skews P1's marginal win probability
     strictly descending by lane (1 > 2 > ... > 6). The fixture's
@@ -684,9 +714,12 @@ class ConfidenceOnlyPoolsTest(BetTypeTestBase):
         self.assertEqual(result.races_evaluated["trifecta"], 0)
         self.assertEqual(self._rule(result, "trifecta", "confidence", 0.00).bets, 0)
 
-    def test_confidence_only_pools_produce_no_ev_rules(self) -> None:
-        """There is no price to select on, so `evaluate_bet_types` must
-        not silently manufacture an EV number for these pools."""
+    def test_ev_rules_exist_but_stay_at_zero_bets_with_no_priced_candidates(self) -> None:
+        """No price to select on, so `evaluate_bet_types` must not
+        fabricate an EV *number* -- but the rule rows themselves are
+        expected to exist now (bets=0), unlike the earlier design where
+        they were omitted outright. `no_ev_data` is the place a caller
+        should look to tell "genuinely zero" from "no data.\""""
         with Session(self.engine) as session:
             self._fill_training_lane_ranked(session, self)
             self._add_race(
@@ -707,14 +740,77 @@ class ConfidenceOnlyPoolsTest(BetTypeTestBase):
 
         result = self._evaluate(bet_types=("trifecta", "sanrenpuku", "wide"))
         ev_rules = [r for r in result.rules if r.rule in ("ev_best", "ev_all")]
-        self.assertEqual(ev_rules, [])
+        self.assertGreater(len(ev_rules), 0)
+        self.assertTrue(all(r.bets == 0 for r in ev_rules))
         confidence_rules = {r.bet_type for r in result.rules if r.rule == "confidence"}
         self.assertEqual(confidence_rules, {"trifecta", "sanrenpuku", "wide"})
+        self.assertEqual(set(result.no_ev_data), {"trifecta", "sanrenpuku", "wide"})
 
-    def test_default_bet_types_include_the_confidence_only_pools(self) -> None:
+    def test_default_bet_types_include_all_seven_pools(self) -> None:
         self.assertIn("trifecta", ebt.DEFAULT_BET_TYPES)
         self.assertIn("sanrenpuku", ebt.DEFAULT_BET_TYPES)
         self.assertIn("wide", ebt.DEFAULT_BET_TYPES)
+
+
+class AutomaticEvSelectionTest(BetTypeTestBase):
+    """The point of removing the static confidence-only list: once
+    `odds_snapshots` actually holds rows for 3連単/3連複/拡連複ーー
+    whenever `capture_odds --with-trifecta` or a future backfill puts
+    them there ーー `evaluate_bet_types` must pick them up with no code
+    change. This is what proves that, using the same `OddsSnapshot`
+    fixture path `SettlementTest` already uses for the other pools.
+    """
+
+    def test_trifecta_gets_ev_rules_once_odds_are_captured(self) -> None:
+        with Session(self.engine) as session:
+            self._fill_training(session)
+            self._add_race(
+                session,
+                TEST_START,
+                1,
+                winner=1,
+                second=2,
+                payouts=[("３連単", "1-2-3", 12000)],
+            )
+            session.commit()
+
+        before = self._evaluate(bet_types=("trifecta",), ev_thresholds=(1.00,))
+        self.assertIn("trifecta", before.no_ev_data)
+        self.assertEqual(self._rule(before, "trifecta", "ev_all", 1.00).bets, 0)
+
+        with Session(self.engine) as session:
+            race = session.query(Race).filter_by(race_date=TEST_START, race_number=1).one()
+            all_triples = [
+                f"{a}-{b}-{c}"
+                for a in range(1, 7)
+                for b in range(1, 7)
+                for c in range(1, 7)
+                if len({a, b, c}) == 3
+            ]
+            for combination in all_triples:
+                session.add(
+                    OddsSnapshot(
+                        race_id=race.id,
+                        bet_type="trifecta",
+                        combination=combination,
+                        # ~1/120 chance under near-uniform training; 400.0
+                        # clears the 1.00 EV threshold with real margin
+                        # rather than landing on it by chance the way a
+                        # tighter value could.
+                        odds=400.0 if combination == "1-2-3" else 5.0,
+                        observed_at=race.scheduled_deadline_at,
+                        available_at=race.scheduled_deadline_at,
+                        is_closing=True,
+                    )
+                )
+            session.commit()
+
+        after = self._evaluate(bet_types=("trifecta",), ev_thresholds=(1.00,))
+        self.assertNotIn("trifecta", after.no_ev_data)
+        rule = self._rule(after, "trifecta", "ev_all", 1.00)
+        self.assertGreater(rule.bets, 0)
+        self.assertEqual(rule.hits, 1)
+        self.assertAlmostEqual(rule.returned, 120.0, places=9)
 
 
 if __name__ == "__main__":

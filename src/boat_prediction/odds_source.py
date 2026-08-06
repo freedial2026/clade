@@ -47,6 +47,15 @@ from .race_id import VALID_VENUE_CODES
 INDEX_URL = "https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
 ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/oddstf?rno={rno}&jcd={jcd}&hd={hd}"
 EXACTA_ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/odds2tf?rno={rno}&jcd={jcd}&hd={hd}"
+TRIFECTA_ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/odds3t?rno={rno}&jcd={jcd}&hd={hd}"
+SANRENPUKU_ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/odds3f?rno={rno}&jcd={jcd}&hd={hd}"
+WIDE_ODDS_URL = "https://www.boatrace.jp/owpc/pc/race/oddsk?rno={rno}&jcd={jcd}&hd={hd}"
+"""3連単, 3連複, 拡連複 -- each on its own page, unlike 2連単/2連複's shared
+one. Retention was probed the same way as `EARLIEST_RETAINED_DATE` below
+(tasks/CURRENT.md, 2026-08-06): a real race day/venue just before that
+date returns the same page-shell-with-no-締切マーカー shape the other
+odds pages return before 2017-04-01, and 2017-04-01 itself returns real
+data of the same shape as a 2026 page. All three share the boundary."""
 """2連単 and 2連複, both rendered on one page.
 
 Captured for a reason the win/place page cannot serve: these are
@@ -89,13 +98,21 @@ class RaceOdds:
 
 EXACTA_BET_TYPE = "exacta"
 QUINELLA_BET_TYPE = "quinella"
-"""`odds_snapshots.bet_type` values for 2連単 and 2連複.
+TRIFECTA_BET_TYPE = "trifecta"
+SANRENPUKU_BET_TYPE = "sanrenpuku"
+WIDE_BET_TYPE = "wide"
+"""`odds_snapshots.bet_type` values for 2連単, 2連複, 3連単, 3連複, 拡連複.
 
 English, matching the `win`/`place_low`/`place_high` already in that
 column, rather than the Japanese `２連単` that `race_payouts` uses. The
 two tables come from different sources and already disagree; making
 `odds_snapshots` internally consistent is worth more than making it
 match a table it is never joined to on this column.
+
+These five also match `combination_model`/`evaluate_bet_types`'s
+`BetTypeSpec.key` naming exactly, deliberately -- `odds_bet_type` on
+those specs is one of these constants, so a spec and its odds rows are
+never one string apart from each other.
 """
 
 
@@ -130,6 +147,18 @@ def odds_url(target_date: date, venue_code: str, race_number: int) -> str:
 
 def exacta_odds_url(target_date: date, venue_code: str, race_number: int) -> str:
     return _race_url(EXACTA_ODDS_URL, target_date, venue_code, race_number)
+
+
+def trifecta_odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+    return _race_url(TRIFECTA_ODDS_URL, target_date, venue_code, race_number)
+
+
+def sanrenpuku_odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+    return _race_url(SANRENPUKU_ODDS_URL, target_date, venue_code, race_number)
+
+
+def wide_odds_url(target_date: date, venue_code: str, race_number: int) -> str:
+    return _race_url(WIDE_ODDS_URL, target_date, venue_code, race_number)
 
 
 def _fetch(url: str, opener: object | None) -> str:
@@ -183,6 +212,27 @@ def fetch_exacta_odds_page(
     caller's business.
     """
     return _fetch(exacta_odds_url(target_date, venue_code, race_number), opener=opener)
+
+
+def fetch_trifecta_odds_page(
+    target_date: date, venue_code: str, race_number: int, *, opener: object | None = None
+) -> str:
+    """Fetch one race's 3連単 page. Same contract as `fetch_odds_page`."""
+    return _fetch(trifecta_odds_url(target_date, venue_code, race_number), opener=opener)
+
+
+def fetch_sanrenpuku_odds_page(
+    target_date: date, venue_code: str, race_number: int, *, opener: object | None = None
+) -> str:
+    """Fetch one race's 3連複 page. Same contract as `fetch_odds_page`."""
+    return _fetch(sanrenpuku_odds_url(target_date, venue_code, race_number), opener=opener)
+
+
+def fetch_wide_odds_page(
+    target_date: date, venue_code: str, race_number: int, *, opener: object | None = None
+) -> str:
+    """Fetch one race's 拡連複 page. Same contract as `fetch_odds_page`."""
+    return _fetch(wide_odds_url(target_date, venue_code, race_number), opener=opener)
 
 
 def fetch_racing_venues(target_date: date, *, opener: object | None = None) -> tuple[str, ...]:
@@ -358,6 +408,150 @@ def parse_exacta_odds(html: str) -> RaceCombinationOdds:
     )
 
 
+def parse_wide_odds(html: str) -> RaceCombinationOdds:
+    """Parse a fetched 拡連複 page into per-pair odds.
+
+    Structurally identical to 2連複's grid on the 2連単/2連複 page --
+    same triangular header-column-by-lowest-lane layout, same low-high
+    odds range in each cell -- so this reuses `_combination_grid`
+    unmodified rather than duplicating it. Verified against a real
+    fetched page: 15/15 pairs, matching `combination_model.wide_probabilities`'s
+    15-pair shape exactly (tasks/CURRENT.md, 2026-08-06).
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    entries = _combination_grid(soup, "拡連複オッズ", WIDE_BET_TYPE)
+    return RaceCombinationOdds(is_closing=CLOSING_ODDS_MARKER in html, entries=tuple(entries))
+
+
+def _trifecta_grid(soup: object, heading: str, bet_type: str) -> list[CombinationOdds]:
+    """Read the 3連単/3連複 grid: six column-groups (one per header lane,
+    same as `_combination_grid`), but each group is itself two-level --
+    a *leading* value (second place for 3連単, the middle of the triple
+    for 3連複) and a *trailing* value (third place / the highest of the
+    triple) -- because a pair alone cannot address a 3-way combination.
+
+    The leading value is only rendered once per block and left out of
+    the rows below it (an HTML rowspan collapsing to a shorter `<tr>` in
+    the parsed tree), so every group needs its own carried-forward
+    state: 3 cells in a row means "start a new block, remember this
+    leading value"; 2 cells means "reuse the group's last leading value."
+
+    The block boundaries are not per-group -- they are driven by a value
+    shared across every group in that row (the smallest lane not yet
+    used, walking upward) -- so in practice all six groups switch
+    between 3-cell and 2-cell rows on the very same `<tr>`, in lockstep.
+    This is read off the row's own cell count divided by six rather than
+    assumed, so a page that violates the lockstep would raise instead of
+    silently misattributing a cell.
+
+    Verified against real fetched pages (tasks/CURRENT.md, 2026-08-06):
+    120/120 unique combinations for 3連単, 20/20 for 3連複, both with
+    zero duplicates and values matching a hand-traced reading of the
+    same page.
+    """
+    node = soup.find("span", string=heading)
+    if node is None:
+        return []
+    table = node.find_next("table")
+    if table is None:
+        return []
+    head = table.find("thead")
+    body = table.find("tbody")
+    if head is None or body is None:
+        return []
+
+    head_cells = head.find_all(["td", "th"])
+    leaders: list[int] = []
+    for column in range(len(head_cells) // 2):
+        text = head_cells[column * 2].get_text(strip=True)
+        if text.isdigit():
+            leaders.append(int(text))
+    n_groups = len(leaders)
+    if n_groups == 0:
+        return []
+
+    # Per-group "current leading value" -- None until that group's first
+    # populated block, since a lane with too few valid combinations left
+    # (e.g. 3連複's lane 5/6 columns, which can run out of larger
+    # partners) may never start at all.
+    leading: list[int | None] = [None] * n_groups
+
+    entries: list[CombinationOdds] = []
+    for row in body.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) % n_groups != 0:
+            continue  # malformed row -- skip rather than misattribute
+        stride = len(cells) // n_groups
+        if stride not in (2, 3):
+            continue
+        for group in range(n_groups):
+            texts = [
+                c.get_text(strip=True) for c in cells[group * stride : (group + 1) * stride]
+            ]
+            if stride == 3:
+                leading_text, trailing_text, odds_text = texts
+                if leading_text == "":
+                    continue  # this group has no entry in this block
+                leading[group] = int(leading_text)
+                trailing_text_value = trailing_text
+            else:
+                trailing_text_value, odds_text = texts
+                if trailing_text_value == "" or leading[group] is None:
+                    continue
+            if not trailing_text_value.isdigit():
+                continue
+            value, _ = _parse_odds_cell(odds_text)
+            if value is None:
+                continue
+            entries.append(
+                CombinationOdds(
+                    bet_type=bet_type,
+                    combination=f"{leaders[group]}-{leading[group]}-{int(trailing_text_value)}",
+                    odds=value,
+                )
+            )
+    return entries
+
+
+def parse_trifecta_odds(html: str) -> RaceCombinationOdds:
+    """Parse a fetched 3連単 page into per-combination odds.
+
+    `combination` is `"first-second-third"`, in finish order -- matching
+    how `race_payouts.combination` writes a 3連単 (e.g. `"1-4-3"`), and
+    `combination_model.encode_trifecta`'s ordering. The page lists a
+    combination once, under its own first-place column, so no
+    deduplication is needed.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    entries = _trifecta_grid(soup, "3連単オッズ", TRIFECTA_BET_TYPE)
+    return RaceCombinationOdds(is_closing=CLOSING_ODDS_MARKER in html, entries=tuple(entries))
+
+
+def parse_sanrenpuku_odds(html: str) -> RaceCombinationOdds:
+    """Parse a fetched 3連複 page into per-combination odds.
+
+    `combination` is `"low-mid-high"`, ascending -- matching how
+    `race_payouts.combination` writes a 3連複 (e.g. `"1-2-3"`, always
+    sorted) and `combination_model.sanrenpuku_probabilities`'s key shape.
+    The page groups by the *lowest* lane in the triple rather than by
+    first place (there is no "first place" for an unordered bet), and
+    every unordered triple appears exactly once, under its lowest
+    member's column, already in ascending order -- `_trifecta_grid`'s
+    `leaders[group]-leading[group]-trailing` is `low-mid-high` here
+    without any extra sort, because the page itself only ever lists a
+    larger value after a smaller one within a group.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    entries = _trifecta_grid(soup, "3連複オッズ", SANRENPUKU_BET_TYPE)
+    return RaceCombinationOdds(is_closing=CLOSING_ODDS_MARKER in html, entries=tuple(entries))
+
+
 def fetch_range(
     start_date: date,
     end_date: date,
@@ -405,6 +599,81 @@ def fetch_range(
                 dest_path.write_text(html, encoding="utf-8")
                 written += 1
                 sleep(delay_seconds)
+
+        log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
+        current = date.fromordinal(current.toordinal() + 1)
+    return written
+
+
+_TRIFECTA_FAMILY_PAGES: tuple[tuple[str, object], ...] = (
+    ("odds3t", trifecta_odds_url),
+    ("odds3f", sanrenpuku_odds_url),
+    ("oddsk", wide_odds_url),
+)
+"""3連単/3連複/拡連複 each have their own page (unlike 2連単/2連複's shared
+one), so `fetch_trifecta_family_range` writes three files per race
+rather than `fetch_range`'s one."""
+
+
+def fetch_trifecta_family_range(
+    start_date: date,
+    end_date: date,
+    dest_dir: Path,
+    *,
+    delay_seconds: float = DEFAULT_REQUEST_DELAY_SECONDS,
+    opener: object | None = None,
+    sleep: object = time.sleep,
+    log: object = print,
+) -> int:
+    """Fetch 3連単/3連複/拡連複 closing-odds pages for every racing
+    venue/race in the date range, saving raw HTML to
+    `dest_dir/{YYYYMMDD}/{venue}_{race}_{page}.html` (`page` one of
+    `odds3t`/`odds3f`/`oddsk`).
+
+    Same shape as `fetch_range` -- idempotent per file, resumable after
+    interruption, one request every `delay_seconds` -- but three pages
+    per race instead of one, since these three pools do not share a page
+    the way 2連単/2連複 do. A day's `_venues.txt` marker is shared with
+    `fetch_range` if `dest_dir` is reused across both, so running this
+    against the same directory a win/place fetch already populated skips
+    the redundant venue-discovery request rather than repeating it.
+
+    Returns the number of pages newly written.
+    """
+    if delay_seconds < 1.0:
+        raise OddsSourceError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
+    if start_date < EARLIEST_RETAINED_DATE:
+        raise OddsSourceError(
+            f"start_date {start_date} precedes the retention window "
+            f"({EARLIEST_RETAINED_DATE}); no odds are available before it"
+        )
+    if end_date < start_date:
+        raise OddsSourceError(f"end_date {end_date} precedes start_date {start_date}")
+
+    written = 0
+    current = start_date
+    while current <= end_date:
+        day_dir = dest_dir / current.strftime("%Y%m%d")
+        venues_marker = day_dir / "_venues.txt"
+
+        if venues_marker.exists():
+            venues = tuple(v for v in venues_marker.read_text(encoding="utf-8").split() if v)
+        else:
+            venues = fetch_racing_venues(current, opener=opener)
+            sleep(delay_seconds)
+            day_dir.mkdir(parents=True, exist_ok=True)
+            venues_marker.write_text("\n".join(venues), encoding="utf-8")
+
+        for venue_code in venues:
+            for race_number in range(1, 13):
+                for page_name, url_fn in _TRIFECTA_FAMILY_PAGES:
+                    dest_path = day_dir / f"{venue_code}_{race_number:02d}_{page_name}.html"
+                    if dest_path.exists():
+                        continue
+                    html = _fetch(url_fn(current, venue_code, race_number), opener=opener)
+                    dest_path.write_text(html, encoding="utf-8")
+                    written += 1
+                    sleep(delay_seconds)
 
         log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
         current = date.fromordinal(current.toordinal() + 1)

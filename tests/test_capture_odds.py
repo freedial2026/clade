@@ -70,6 +70,29 @@ def _parsed_exacta() -> RaceCombinationOdds:
     )
 
 
+def _parsed_trifecta() -> RaceCombinationOdds:
+    """One combination is enough here too -- the three-level grid parser
+    has its own tests in test_odds_source.py."""
+    return RaceCombinationOdds(
+        is_closing=False,
+        entries=(CombinationOdds(bet_type="trifecta", combination="1-2-3", odds=11.5),),
+    )
+
+
+def _parsed_sanrenpuku() -> RaceCombinationOdds:
+    return RaceCombinationOdds(
+        is_closing=False,
+        entries=(CombinationOdds(bet_type="sanrenpuku", combination="1-2-3", odds=4.3),),
+    )
+
+
+def _parsed_wide() -> RaceCombinationOdds:
+    return RaceCombinationOdds(
+        is_closing=False,
+        entries=(CombinationOdds(bet_type="wide", combination="1-2", odds=2.5),),
+    )
+
+
 def _clock_at(start: dt.datetime, step_seconds: float = 3.0):
     """A clock that starts at `start` and advances one request's spacing
     per call, so a run's readings get distinct, ordered timestamps the
@@ -533,6 +556,159 @@ class CaptureWithExactaTest(CaptureOddsTestBase):
 
         # One race, two pages: exactly one gap, and none after the last.
         self.assertEqual(sleeps, [capture_odds.DEFAULT_REQUEST_DELAY_SECONDS])
+
+
+class CaptureWithTrifectaTest(CaptureOddsTestBase):
+    """`--with-trifecta`: 3連単/3連複/拡連複, the three pools with no odds
+    archive anywhere in this database (tasks/CURRENT.md, 2026-08-06) --
+    capturing them going forward is the only way `evaluate_bet_types`
+    could ever run an EV-selection rule against them.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        for name, value in (
+            ("parse_trifecta_odds", _parsed_trifecta()),
+            ("parse_sanrenpuku_odds", _parsed_sanrenpuku()),
+            ("parse_wide_odds", _parsed_wide()),
+        ):
+            patcher = patch(f"boat_prediction.db.capture_odds.{name}", return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _capture(self, opener, *, sleeps=None):
+        with Session(self.engine) as session:
+            result = capture_odds.capture_due_odds(
+                session,
+                now=DEADLINE - dt.timedelta(minutes=10),
+                race_date=RACE_DATE,
+                lead_minutes=(10,),
+                opener=opener,
+                sleeper=(sleeps.append if sleeps is not None else (lambda _: None)),
+                clock=_clock_at(DEADLINE - dt.timedelta(minutes=10)),
+                with_trifecta=True,
+            )
+            session.commit()
+            return result
+
+    def test_off_by_default_so_the_existing_job_is_unchanged(self) -> None:
+        opener = FakeOpener()
+
+        with Session(self.engine) as session:
+            capture_odds.capture_due_odds(
+                session,
+                now=DEADLINE - dt.timedelta(minutes=10),
+                race_date=RACE_DATE,
+                lead_minutes=(10,),
+                opener=opener,
+                sleeper=lambda _: None,
+            )
+
+        self.assertEqual(len(opener.urls), 1)
+        self.assertIn("oddstf", opener.urls[0])
+
+    def test_fetches_all_three_pages(self) -> None:
+        opener = FakeOpener()
+
+        result = self._capture(opener)
+
+        self.assertEqual(
+            opener.urls,
+            [
+                "https://www.boatrace.jp/owpc/pc/race/oddstf?rno=1&jcd=24&hd=20260601",
+                "https://www.boatrace.jp/owpc/pc/race/odds3t?rno=1&jcd=24&hd=20260601",
+                "https://www.boatrace.jp/owpc/pc/race/odds3f?rno=1&jcd=24&hd=20260601",
+                "https://www.boatrace.jp/owpc/pc/race/oddsk?rno=1&jcd=24&hd=20260601",
+            ],
+        )
+        self.assertEqual(result.fetched, 1)
+        self.assertEqual(result.trifecta_fetched, 1)
+        self.assertEqual(result.sanrenpuku_fetched, 1)
+        self.assertEqual(result.wide_fetched, 1)
+
+    def test_all_four_pools_share_one_observed_at(self) -> None:
+        self._capture(FakeOpener())
+
+        with Session(self.engine) as session:
+            stamps = set(session.scalars(select(OddsSnapshot.observed_at)))
+            types = set(session.scalars(select(OddsSnapshot.bet_type)))
+
+        self.assertEqual(len(stamps), 1)
+        self.assertEqual(
+            types, {"win", "place_low", "place_high", "trifecta", "sanrenpuku", "wide"}
+        )
+
+    def test_stores_the_combination_rows(self) -> None:
+        self._capture(FakeOpener())
+
+        with Session(self.engine) as session:
+            row = session.execute(
+                select(OddsSnapshot.combination, OddsSnapshot.odds).where(
+                    OddsSnapshot.bet_type == "trifecta"
+                )
+            ).one()
+
+        self.assertEqual(row[0], "1-2-3")
+        self.assertEqual(float(row[1]), 11.5)
+
+    def test_one_failing_page_does_not_stop_the_others(self) -> None:
+        class SanrenpukuBrokenOpener(FakeOpener):
+            def urlopen(self, request, timeout=None):
+                if "odds3f" in str(request):
+                    raise OSError("boom")
+                return super().urlopen(request, timeout=timeout)
+
+        result = self._capture(SanrenpukuBrokenOpener())
+
+        self.assertEqual(result.trifecta_fetched, 1)
+        self.assertEqual(result.sanrenpuku_fetched, 0)
+        self.assertEqual(result.wide_fetched, 1)
+        self.assertEqual(len(result.failed), 1)
+        self.assertIn("3連複", result.failed[0][0])
+        with Session(self.engine) as session:
+            self.assertEqual(
+                session.query(OddsSnapshot).filter_by(bet_type="trifecta").count(), 1
+            )
+            self.assertEqual(
+                session.query(OddsSnapshot).filter_by(bet_type="wide").count(), 1
+            )
+
+    def test_the_three_extra_requests_are_paced(self) -> None:
+        sleeps: list[float] = []
+
+        self._capture(FakeOpener(), sleeps=sleeps)
+
+        # One race, four pages (win + 3): three gaps, none after the last.
+        self.assertEqual(sleeps, [capture_odds.DEFAULT_REQUEST_DELAY_SECONDS] * 3)
+
+    def test_composes_with_with_exacta_for_all_five_pools(self) -> None:
+        with patch(
+            "boat_prediction.db.capture_odds.parse_exacta_odds",
+            return_value=_parsed_exacta(),
+        ):
+            opener = FakeOpener()
+            with Session(self.engine) as session:
+                result = capture_odds.capture_due_odds(
+                    session,
+                    now=DEADLINE - dt.timedelta(minutes=10),
+                    race_date=RACE_DATE,
+                    lead_minutes=(10,),
+                    opener=opener,
+                    sleeper=lambda _: None,
+                    clock=_clock_at(DEADLINE - dt.timedelta(minutes=10)),
+                    with_exacta=True,
+                    with_trifecta=True,
+                )
+                session.commit()
+
+        self.assertEqual(result.fetched, 1)
+        self.assertEqual(result.exacta_fetched, 1)
+        self.assertEqual(result.trifecta_fetched, 1)
+        self.assertEqual(result.sanrenpuku_fetched, 1)
+        self.assertEqual(result.wide_fetched, 1)
+        with Session(self.engine) as session:
+            stamps = set(session.scalars(select(OddsSnapshot.observed_at)))
+        self.assertEqual(len(stamps), 1)
 
 
 class LeadTimeBracketsPreviewTest(unittest.TestCase):

@@ -897,6 +897,84 @@ def load_combination_odds_observation(
     )
 
 
+def load_combination_odds_archive_day(
+    session: Session,
+    venue_code: str,
+    race_date: dt.date,
+    race_number: int,
+    race_odds,
+) -> OddsLoadStats:
+    """Load one *archived* combination-odds page (3連単/3連複/拡連複, or
+    2連単/2連複 if a future archive loader wants it) -- the counterpart to
+    `load_odds_day` for pools that page carries nothing about.
+
+    `load_odds_day` replaces *every* snapshot on the race, which is
+    correct there because a single fetch already carries the whole
+    win/place page. It would be wrong here: a combination-odds archive
+    load runs as its own pass, typically after win/place and
+    2連単/2連複 are already on the race, and wiping the race's snapshots
+    would silently delete pools this call knows nothing about. Instead
+    only the `bet_type`(s) actually present in `race_odds.entries` are
+    replaced -- one call with only 3連単 rows touches no 3連複/拡連複/
+    win/place row that happens to already exist for the same race.
+
+    Only `is_closing` pages are loaded, same reasoning as `load_odds_day`:
+    a live/in-progress page renders current, not final, odds under the
+    same URL, and an archive load must never mistake one for the other.
+    Idempotent per `(race, bet_type)`: re-running a day fully replaces
+    just the bet_types that day's file actually contained.
+    """
+    stats = OddsLoadStats()
+    if not race_odds.is_closing:
+        stats.skipped_not_closing += 1
+        return stats
+
+    venue = _venue(session, venue_code)
+    race = session.scalar(
+        select(Race).where(
+            Race.race_date == race_date,
+            Race.venue_id == venue.id,
+            Race.race_number == race_number,
+        )
+    )
+    if race is None:
+        stats.skipped_race_not_found += 1
+        return stats
+    if race.scheduled_deadline_at is None:
+        stats.skipped_no_deadline += 1
+        return stats
+
+    observed_at = race.scheduled_deadline_at
+    source_id = _source_id(session, SOURCE_ODDS)
+
+    bet_types = {entry.bet_type for entry in race_odds.entries}
+    if bet_types:
+        for existing in session.scalars(
+            select(OddsSnapshot).where(
+                OddsSnapshot.race_id == race.id, OddsSnapshot.bet_type.in_(bet_types)
+            )
+        ):
+            session.delete(existing)
+        session.flush()
+
+    for entry in race_odds.entries:
+        session.add(
+            OddsSnapshot(
+                race_id=race.id,
+                bet_type=entry.bet_type,
+                combination=entry.combination,
+                odds=entry.odds,
+                observed_at=observed_at,
+                available_at=observed_at,
+                is_closing=True,
+                source_id=source_id,
+            )
+        )
+        stats.snapshots += 1
+
+    return stats
+
+
 def _store_live_odds(
     session: Session,
     venue_code: str,

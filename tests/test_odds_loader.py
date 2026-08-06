@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from boat_prediction.db import loader
 from boat_prediction.db.models import Base, OddsSnapshot, Race, Venue
-from boat_prediction.odds_source import RaceOdds, WinPlaceOdds
+from boat_prediction.odds_source import CombinationOdds, RaceCombinationOdds, RaceOdds, WinPlaceOdds
 
 JST = ZoneInfo("Asia/Tokyo")
 RACE_DATE = dt.date(2026, 6, 1)
@@ -178,6 +178,174 @@ class LoadOddsDayTest(unittest.TestCase):
             self.assertEqual(stats.skipped_missing_value, 3)
             rows = session.scalars(select(OddsSnapshot)).all()
             self.assertTrue(all(row.combination == "2" for row in rows))
+
+
+def _combination_odds(
+    *, bet_type: str = "trifecta", is_closing: bool = True, entries: tuple | None = None
+) -> RaceCombinationOdds:
+    if entries is None:
+        entries = (
+            CombinationOdds(bet_type=bet_type, combination="1-2-3", odds=11.5),
+            CombinationOdds(bet_type=bet_type, combination="1-2-4", odds=16.7),
+        )
+    return RaceCombinationOdds(is_closing=is_closing, entries=entries)
+
+
+class LoadCombinationOddsArchiveDayTest(unittest.TestCase):
+    """The property that distinguishes this from `load_odds_day`: it must
+    touch only the `bet_type`(s) present in the call, never the whole
+    race's snapshot set -- a 3連単 archive load running after win/place
+    and 2連単/2連複 are already on the race must not delete them."""
+
+    def setUp(self) -> None:
+        self.engine = _engine()
+        self.addCleanup(self.engine.dispose)
+
+    def _seed_race(self, session: Session, *, with_deadline: bool = True) -> None:
+        loader.ensure_reference_data(session)
+        session.commit()
+
+        venue = session.scalar(select(Venue).where(Venue.code == VENUE_CODE))
+        race = Race(
+            venue_id=venue.id,
+            race_date=RACE_DATE,
+            race_number=RACE_NUMBER,
+            scheduled_deadline_at=DEADLINE if with_deadline else None,
+        )
+        session.add(race)
+        session.commit()
+
+    def test_inserts_combination_snapshots(self) -> None:
+        with Session(self.engine) as session:
+            self._seed_race(session)
+
+            stats = loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+            session.commit()
+
+            self.assertEqual(stats.snapshots, 2)
+            rows = session.scalars(select(OddsSnapshot)).all()
+            self.assertEqual(len(rows), 2)
+            naive_deadline = DEADLINE.replace(tzinfo=None)
+            for row in rows:
+                self.assertEqual(row.observed_at, naive_deadline)
+                self.assertEqual(row.available_at, naive_deadline)
+                self.assertTrue(row.is_closing)
+                self.assertEqual(row.bet_type, "trifecta")
+
+    def test_does_not_touch_a_different_bet_type_already_on_the_race(self) -> None:
+        """The actual reason this function exists rather than reusing
+        `load_odds_day`: a 単勝 row from an earlier pass must survive a
+        3連単 archive load run afterward."""
+        with Session(self.engine) as session:
+            self._seed_race(session)
+            loader.load_odds_day(
+                session,
+                VENUE_CODE,
+                RACE_DATE,
+                RACE_NUMBER,
+                RaceOdds(
+                    is_closing=True,
+                    entries=(
+                        WinPlaceOdds(
+                            lane_number=1,
+                            racer_name="齋藤和政",
+                            win_odds=2.1,
+                            place_odds_low=1.1,
+                            place_odds_high=1.4,
+                        ),
+                    ),
+                ),
+            )
+            session.commit()
+
+            loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+            session.commit()
+
+            bet_types = {row.bet_type for row in session.scalars(select(OddsSnapshot))}
+            self.assertEqual(bet_types, {"win", "place_low", "place_high", "trifecta"})
+
+    def test_reloading_the_same_bet_type_replaces_rather_than_duplicates(self) -> None:
+        with Session(self.engine) as session:
+            self._seed_race(session)
+
+            loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+            session.commit()
+            loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+            session.commit()
+
+            self.assertEqual(session.query(OddsSnapshot).count(), 2)
+
+    def test_reloading_replaces_only_the_bet_types_the_new_call_carries(self) -> None:
+        """A day that loads 3連単 then 3連複 for the same race must end
+        up with both, not have the second call's narrower bet_type set
+        wipe the first's."""
+        with Session(self.engine) as session:
+            self._seed_race(session)
+
+            loader.load_combination_odds_archive_day(
+                session,
+                VENUE_CODE,
+                RACE_DATE,
+                RACE_NUMBER,
+                _combination_odds(bet_type="trifecta"),
+            )
+            session.commit()
+            loader.load_combination_odds_archive_day(
+                session,
+                VENUE_CODE,
+                RACE_DATE,
+                RACE_NUMBER,
+                _combination_odds(bet_type="sanrenpuku"),
+            )
+            session.commit()
+
+            bet_types = {row.bet_type for row in session.scalars(select(OddsSnapshot))}
+            self.assertEqual(bet_types, {"trifecta", "sanrenpuku"})
+            self.assertEqual(session.query(OddsSnapshot).count(), 4)
+
+    def test_non_closing_page_is_skipped(self) -> None:
+        with Session(self.engine) as session:
+            self._seed_race(session)
+
+            stats = loader.load_combination_odds_archive_day(
+                session,
+                VENUE_CODE,
+                RACE_DATE,
+                RACE_NUMBER,
+                _combination_odds(is_closing=False),
+            )
+
+            self.assertEqual(stats.skipped_not_closing, 1)
+            self.assertEqual(session.query(OddsSnapshot).count(), 0)
+
+    def test_race_not_found_is_skipped_not_raised(self) -> None:
+        with Session(self.engine) as session:
+            loader.ensure_reference_data(session)
+            session.commit()
+
+            stats = loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+
+            self.assertEqual(stats.skipped_race_not_found, 1)
+
+    def test_missing_deadline_is_skipped_not_raised(self) -> None:
+        with Session(self.engine) as session:
+            self._seed_race(session, with_deadline=False)
+
+            stats = loader.load_combination_odds_archive_day(
+                session, VENUE_CODE, RACE_DATE, RACE_NUMBER, _combination_odds()
+            )
+
+            self.assertEqual(stats.skipped_no_deadline, 1)
 
 
 if __name__ == "__main__":

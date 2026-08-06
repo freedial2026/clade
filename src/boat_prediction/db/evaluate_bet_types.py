@@ -34,24 +34,28 @@ Which bet types can be *selected on price*, and which can only be settled
 Settling a *fixed* rule needs only the winning combination's payout, and
 `race_payouts` has that for all seven pools over 21 years. Selecting on
 price needs the odds of every candidate, including the ones that lose,
-and that grid exists for far fewer:
+and how much of that exists depends entirely on what has been captured:
 
 | pool | odds grid | settled payouts |
 |---|---|---|
 | 単勝 | closing, 2025-07-29.. | 21 years |
 | 複勝 | closing, 2025-07-29.. | 21 years |
-| 2連単 | live capture only, from 2026-08-03 | 21 years |
-| 2連複 | live capture only, from 2026-08-03 | 21 years |
-| 拡連複 / 3連単 / 3連複 | **none** | 21 years |
+| 2連単 / 2連複 | live capture only, from 2026-08-03 | 21 years |
+| 3連単 / 3連複 / 拡連複 | live capture only, once `capture_odds --with-trifecta` has run (`odds_source.py`, 2026-08-06) | 21 years |
 
-`CONFIDENCE_ONLY_BET_TYPES` names the last row. For those three pools
-this runner still reports a `confidence` rule -- back the model's own
-top pick every race, settled at the real payout, the same question
-already asked and answered for 単勝 (0.9108 there) -- but never
-`ev_best`/`ev_all`: there is no price to select on, and `--bet-types`
-including them will not silently produce an EV number, it will produce
-no EV rows for them at all. See `combination_model.construct_trifecta_probabilities`
-for how a 3-way probability is built without a fitted third-place model.
+There is no `requires_odds` flag or hardcoded list gating this: every
+pool always gets a `confidence` rule (the model's own top pick, settled
+at the real payout -- needs no price at all), and `ev_best`/`ev_all` are
+computed per race from whatever `odds_snapshots` rows actually exist for
+that pool in the requested window. A pool with no captured odds simply
+shows `bets=0` on its EV rows rather than being special-cased out of the
+output -- `BetTypeEvaluation.no_ev_data` names, after the fact, whichever
+pools this particular run never found a price for, so the *code* does
+not need to know in advance which pools have data and which do not; the
+*data* answers that each time this is run. See
+`combination_model.construct_trifecta_probabilities` for how a 3-way
+probability is built without a fitted third-place model, independent of
+whether a price ever backs it.
 
 Where the probabilities come from
 ---------------------------------
@@ -120,38 +124,30 @@ this stake, so `staked_yen` is just `bets * STAKE_YEN`."""
 
 SPECIAL_REFUND_COMBINATION = "特払い"
 
-CONFIDENCE_ONLY_BET_TYPES = ("拡連複", "３連単", "３連複")
-"""Pools with settled payouts but no odds grid anywhere in this database.
-
-Reported by name in the output. Fetching a grid for them is possible
-(the site renders it) but has never been run. Each still gets a
-`confidence` rule -- settle the model's own top pick against the real
-payout -- but never `ev_best`/`ev_all`, since there is no price to
-select on.
-"""
-
 
 @dataclass(frozen=True)
 class BetTypeSpec:
     """How one pool maps onto the odds table and the payout table.
 
-    `odds_bet_type` is `odds_snapshots.bet_type`, `None` when
-    `requires_odds` is `False` (no grid exists for this pool at all, so
-    there is nothing to look up). `payout_bet_type` is
-    `race_payouts.bet_type`, which is written in Japanese with full-width
-    digits ("２連単") because that is what the K-file carries.
+    `odds_bet_type` is `odds_snapshots.bet_type` -- always set, since
+    `odds_source.py` has a fetcher and parser for all seven pools now
+    (2026-08-06). Whether any *rows* actually exist for it in a given
+    window is a data question the query answers, not something this spec
+    declares. `payout_bet_type` is `race_payouts.bet_type`, written in
+    Japanese with full-width digits ("２連単") because that is what the
+    K-file carries.
 
     `candidates` is the size of the full grid (6 for 単勝/複勝, 30 for
-    2連単, ...) and is only consulted when `requires_odds` is `True`, to
-    tell a complete capture from a partial one.
+    2連単, 120 for 3連単, ...), used to tell a complete capture from a
+    partial one -- a race with some but not all of a pool's odds is
+    skipped for EV rather than scored on a biased subset.
     """
 
     key: str
     label: str
-    odds_bet_type: str | None
+    odds_bet_type: str
     payout_bet_type: str
     candidates: int
-    requires_odds: bool = True
 
 
 BET_TYPE_SPECS: dict[str, BetTypeSpec] = {
@@ -159,9 +155,9 @@ BET_TYPE_SPECS: dict[str, BetTypeSpec] = {
     "place": BetTypeSpec("place", "複勝", "place_low", "複勝", 6),
     "exacta": BetTypeSpec("exacta", "2連単", "exacta", "２連単", 30),
     "quinella": BetTypeSpec("quinella", "2連複", "quinella", "２連複", 15),
-    "trifecta": BetTypeSpec("trifecta", "3連単", None, "３連単", 120, requires_odds=False),
-    "sanrenpuku": BetTypeSpec("sanrenpuku", "3連複", None, "３連複", 20, requires_odds=False),
-    "wide": BetTypeSpec("wide", "拡連複", None, "拡連複", 15, requires_odds=False),
+    "trifecta": BetTypeSpec("trifecta", "3連単", "trifecta", "３連単", 120),
+    "sanrenpuku": BetTypeSpec("sanrenpuku", "3連複", "sanrenpuku", "３連複", 20),
+    "wide": BetTypeSpec("wide", "拡連複", "wide", "拡連複", 15),
 }
 
 DEFAULT_BET_TYPES = tuple(BET_TYPE_SPECS)
@@ -264,7 +260,12 @@ class BetTypeEvaluation:
     races_evaluated: dict[str, int] = field(default_factory=dict)
     rules: list[BetTypeRuleResult] = field(default_factory=list)
     second_place: SecondPlaceComparison = field(default_factory=SecondPlaceComparison)
-    confidence_only: tuple[str, ...] = CONFIDENCE_ONLY_BET_TYPES
+    no_ev_data: tuple[str, ...] = ()
+    """Bet types this run never found a priced candidate for -- every
+    `ev_best`/`ev_all` row for them has `bets=0`. Computed from the
+    actual rows after the run, not from a hardcoded list, so it reflects
+    whatever `odds_snapshots` holds today rather than a fact frozen at
+    the time this module was written."""
 
     def __str__(self) -> str:
         evaluated = " ".join(f"{k}={v}" for k, v in sorted(self.races_evaluated.items()))
@@ -272,9 +273,10 @@ class BetTypeEvaluation:
             f"train_races={self.train_races} test_races={self.test_races}",
             f"races_evaluated: {evaluated}",
             str(self.second_place),
-            "no odds grid, confidence only: " + ", ".join(self.confidence_only),
-            "",
         ]
+        if self.no_ev_data:
+            lines.append("no priced candidates this run, confidence only: " + ", ".join(self.no_ev_data))
+        lines.append("")
         lines.extend(str(r) for r in self.rules)
         return "\n".join(lines)
 
@@ -325,9 +327,9 @@ def _candidates(
 def _load_market(session: Session, specs, *, is_closing: bool, start_date, end_date):
     """`{race_id: {bet_type_key: {combination: odds}}}`.
 
-    `specs` should already be filtered to `requires_odds` pools -- a spec
-    with `odds_bet_type=None` has nothing to look up, and passing it
-    through would put a `None` into the `IN` list for no benefit.
+    Every spec has a real `odds_bet_type` now, so this is just "ask for
+    all of them" -- a pool with nothing captured yet simply contributes
+    no rows, which the main loop already treats as "no EV this race."
     """
     wanted = {spec.odds_bet_type: spec.key for spec in specs}
     if not wanted:
@@ -481,26 +483,28 @@ def evaluate_bet_types(
     result.second_place = _score_second_place(probabilities, test, conditional_model)
 
     specs = [BET_TYPE_SPECS[b] for b in bet_types]
-    priced_specs = [s for s in specs if s.requires_odds]
     market = _load_market(
-        session, priced_specs, is_closing=is_closing, start_date=test_start, end_date=test_end
+        session, specs, is_closing=is_closing, start_date=test_start, end_date=test_end
     )
     payouts = _load_payouts(session, specs, start_date=test_start, end_date=test_end)
     needs_trifecta = any(spec.key in _TRIFECTA_KEYS for spec in specs)
 
+    # Created unconditionally for every spec -- confidence needs no
+    # price, and a pool with nothing captured yet just leaves its
+    # ev_best/ev_all rows at bets=0 rather than not existing at all. See
+    # BetTypeEvaluation.no_ev_data for how that gets surfaced afterward.
     rules: dict[tuple, BetTypeRuleResult] = {}
     for spec in specs:
         rules[(spec.key, "confidence", DEFAULT_CONFIDENCE_THRESHOLD)] = BetTypeRuleResult(
             "confidence", DEFAULT_CONFIDENCE_THRESHOLD, bet_type=spec.key
         )
-        if spec.requires_odds:
-            for threshold in ev_thresholds:
-                rules[(spec.key, "ev_best", threshold)] = BetTypeRuleResult(
-                    "ev_best", threshold, bet_type=spec.key
-                )
-                rules[(spec.key, "ev_all", threshold)] = BetTypeRuleResult(
-                    "ev_all", threshold, bet_type=spec.key
-                )
+        for threshold in ev_thresholds:
+            rules[(spec.key, "ev_best", threshold)] = BetTypeRuleResult(
+                "ev_best", threshold, bet_type=spec.key
+            )
+            rules[(spec.key, "ev_all", threshold)] = BetTypeRuleResult(
+                "ev_all", threshold, bet_type=spec.key
+            )
     result.races_evaluated = {spec.key: 0 for spec in specs}
 
     for race_id, probs_row in zip(test.race_ids, probabilities):
@@ -526,35 +530,28 @@ def evaluate_bet_types(
             settled = race_payouts.get(spec.key)
             if settled is None:
                 continue
-
-            if not spec.requires_odds:
-                # No price exists for this pool, so there is nothing to
-                # select on -- only the model's own top pick, settled at
-                # whatever it actually paid.
-                result.races_evaluated[spec.key] += 1
-                candidate_probs = _candidates(spec.key, probs, joint, trifecta_joint)
-                best_p = max(candidate_probs, key=lambda c: candidate_probs[c])
-                rule = rules[(spec.key, "confidence", DEFAULT_CONFIDENCE_THRESHOLD)]
-                rule.races += 1
-                _settle(rule, best_p, settled)
-                continue
-
-            odds = race_market.get(spec.key) if race_market else None
-            # A partial grid would let a rule pick from a biased subset of
-            # the pool, so an incomplete race is skipped rather than
-            # evaluated on what happened to be captured.
-            if not odds or len(odds) < spec.candidates:
-                continue
             result.races_evaluated[spec.key] += 1
             candidate_probs = _candidates(spec.key, probs, joint, trifecta_joint)
-            evs = {c: candidate_probs[c] * o for c, o in odds.items() if c in candidate_probs}
-            if not evs:
-                continue
 
-            best_p = max(evs, key=lambda c: candidate_probs[c])
+            # Confidence needs no price at all: the model's own top pick,
+            # settled at whatever it actually paid.
+            best_p = max(candidate_probs, key=lambda c: candidate_probs[c])
             rule = rules[(spec.key, "confidence", DEFAULT_CONFIDENCE_THRESHOLD)]
             rule.races += 1
             _settle(rule, best_p, settled)
+
+            # EV needs a price for every candidate, which may simply not
+            # exist yet for this pool -- that is not an error, it is the
+            # normal state for a pool `capture_odds` hasn't been pointed
+            # at. A partial grid would let a rule pick from a biased
+            # subset of the pool, so an incomplete race is skipped for EV
+            # (its confidence pick above still counts).
+            odds = race_market.get(spec.key) if race_market else None
+            if not odds or len(odds) < spec.candidates:
+                continue
+            evs = {c: candidate_probs[c] * o for c, o in odds.items() if c in candidate_probs}
+            if not evs:
+                continue
 
             best_ev = max(evs, key=lambda c: evs[c])
             for threshold in ev_thresholds:
@@ -571,6 +568,15 @@ def evaluate_bet_types(
                         _settle(rule, combination, settled)
 
     result.rules = list(rules.values())
+    result.no_ev_data = tuple(
+        spec.key
+        for spec in specs
+        if all(
+            r.bets == 0
+            for r in result.rules
+            if r.bet_type == spec.key and r.rule in ("ev_best", "ev_all")
+        )
+    )
     return result
 
 
@@ -592,8 +598,10 @@ def _main(argv: list[str] | None = None) -> int:
         default="closing",
         help=(
             "closing = the archived deadline snapshot (単勝/複勝 only, but years of it); "
-            "live = the pre-deadline capture (2連単/2連複 too, but only since 2026-08). "
-            "3連単/3連複/拡連複 have no grid either way and always run confidence-only."
+            "live = the pre-deadline capture (2連単/2連複/3連単/3連複/拡連複 too, "
+            "each only from whenever capture_odds --with-exacta/--with-trifecta "
+            "was first run). A pool with nothing captured yet still runs "
+            "confidence, just with bets=0 on its EV rows -- see no_ev_data."
         ),
     )
     parser.add_argument(

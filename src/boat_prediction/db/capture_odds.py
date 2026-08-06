@@ -46,6 +46,16 @@ two disagree one of them is stale. The archive cannot answer that -- it
 keeps one closing snapshot of 単勝 alone -- so, like the pre-deadline
 series itself, it can only be built forward.
 
+`--with-trifecta` adds three more pages per race (odds3t/odds3f/oddsk --
+3連単, 3連複, 拡連複 each have their own page, unlike 2連単/2連複's shared
+one), roughly +450 a day at the default lead times. These three pools
+have no odds archive at all (`tasks/CURRENT.md`, 2026-08-06:
+`evaluate_bet_types` could previously only run a `confidence` rule
+against them, never an EV-selection rule, because there was no price to
+select on anywhere in this database) -- capturing them going forward is
+the only way that changes for these three, the same reasoning that built
+the pre-deadline series in the first place.
+
 Prerequisite
 ------------
 
@@ -67,7 +77,13 @@ from ..odds_source import (
     DEFAULT_REQUEST_DELAY_SECONDS,
     fetch_exacta_odds_page,
     fetch_odds_page,
+    fetch_sanrenpuku_odds_page,
+    fetch_trifecta_odds_page,
+    fetch_wide_odds_page,
     parse_exacta_odds,
+    parse_sanrenpuku_odds,
+    parse_trifecta_odds,
+    parse_wide_odds,
     parse_win_place_odds,
 )
 from ..temporal import to_utc
@@ -115,6 +131,9 @@ class CaptureResult:
     races_considered: int = 0
     fetched: int = 0
     exacta_fetched: int = 0
+    trifecta_fetched: int = 0
+    sanrenpuku_fetched: int = 0
+    wide_fetched: int = 0
     stats: loader.OddsLoadStats = field(default_factory=loader.OddsLoadStats)
     failed: list[tuple[str, str]] = field(default_factory=list)
 
@@ -122,6 +141,9 @@ class CaptureResult:
         return (
             f"races_considered={self.races_considered} fetched={self.fetched} "
             f"exacta_fetched={self.exacta_fetched} "
+            f"trifecta_fetched={self.trifecta_fetched} "
+            f"sanrenpuku_fetched={self.sanrenpuku_fetched} "
+            f"wide_fetched={self.wide_fetched} "
             f"snapshots={self.stats.snapshots} "
             f"skipped_missing_value={self.stats.skipped_missing_value} "
             f"skipped_already_observed={self.stats.skipped_already_observed} "
@@ -219,6 +241,7 @@ def capture_due_odds(
     sleeper=sleep,
     clock=None,
     with_exacta: bool = False,
+    with_trifecta: bool = False,
 ) -> CaptureResult:
     """Fetch and store every race that is due for capture right now.
 
@@ -227,19 +250,21 @@ def capture_due_odds(
     retaken later.
 
     `with_exacta` adds the 2連単/2連複 page, doubling the request count.
-    Both pages for one race are stamped with **one** `observed_at`, taken
-    before either fetch: the point of the second pool is to compare it
-    with the first, and two stamps 3 s apart would leave every comparison
-    with a 3 s window in which the market could have moved. The stamp is
-    therefore slightly early for the second page -- conservative in the
-    direction that matters, since `available_at` is what a leakage check
-    reads.
+    `with_trifecta` adds three more (3連単/3連複/拡連複, one page each --
+    unlike 2連単/2連複 these do not share a page). All pages for one race
+    are stamped with **one** `observed_at`, taken before the first fetch:
+    the point of capturing more than one pool is to compare them, and
+    stamps seconds apart would leave every comparison with a window in
+    which the market could have moved. The stamp is therefore slightly
+    early for the later pages -- conservative in the direction that
+    matters, since `available_at` is what a leakage check reads.
 
     A round counts as done once *any* snapshot exists for it, so a race
-    whose win page succeeds and whose exacta page fails is not retried;
-    it is recorded in `failed` instead. That is deliberate -- the
-    alternative is per-bet-type round state, which is a lot of machinery
-    for a page that can simply be missing from a comparison.
+    whose win page succeeds and whose exacta/trifecta pages fail is not
+    retried; each failure is recorded in `failed` instead. That is
+    deliberate -- the alternative is per-bet-type round state, which is a
+    lot of machinery for a page that can simply be missing from a
+    comparison.
     """
     if delay_seconds < 1.0:
         raise CaptureOddsError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
@@ -301,6 +326,31 @@ def capture_due_odds(
             except Exception as exc:  # noqa: BLE001 - record and keep capturing
                 result.failed.append((f"{label} 2連単", str(exc)))
 
+        if with_trifecta:
+            for name, fetch_page, parse_page, counter_attr in (
+                ("3連単", fetch_trifecta_odds_page, parse_trifecta_odds, "trifecta_fetched"),
+                ("3連複", fetch_sanrenpuku_odds_page, parse_sanrenpuku_odds, "sanrenpuku_fetched"),
+                ("拡連複", fetch_wide_odds_page, parse_wide_odds, "wide_fetched"),
+            ):
+                sleeper(delay_seconds)
+                try:
+                    html = fetch_page(
+                        race.race_date, race.venue_code, race.race_number, opener=opener
+                    )
+                    result.stats = result.stats.merge(
+                        loader.load_combination_odds_observation(
+                            session,
+                            race.venue_code,
+                            race.race_date,
+                            race.race_number,
+                            parse_page(html),
+                            observed_at,
+                        )
+                    )
+                    setattr(result, counter_attr, getattr(result, counter_attr) + 1)
+                except Exception as exc:  # noqa: BLE001 - record and keep capturing
+                    result.failed.append((f"{label} {name}", str(exc)))
+
         if index < len(due) - 1:
             sleeper(delay_seconds)
 
@@ -334,6 +384,14 @@ def _main(argv: list[str] | None = None) -> int:
         "--with-exacta",
         action="store_true",
         help="also capture the 2連単/2連複 pool (one more page per race, doubling requests)",
+    )
+    parser.add_argument(
+        "--with-trifecta",
+        action="store_true",
+        help=(
+            "also capture 3連単/3連複/拡連複 (three more pages per race -- "
+            "the only source of odds for these pools anywhere in this database)"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -372,6 +430,7 @@ def _main(argv: list[str] | None = None) -> int:
                 tolerance_minutes=args.tolerance_minutes,
                 delay_seconds=args.delay_seconds,
                 with_exacta=args.with_exacta,
+                with_trifecta=args.with_trifecta,
             )
             session.commit()
     finally:
