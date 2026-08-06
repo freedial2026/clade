@@ -35,6 +35,7 @@ Requires the `official-data` extra (`beautifulsoup4`).
 
 from __future__ import annotations
 
+import argparse
 import re
 import time
 import urllib.request
@@ -678,3 +679,43 @@ def fetch_trifecta_family_range(
         log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
         current = date.fromordinal(current.toordinal() + 1)
     return written
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """Fetch archived closing-odds pages for a date range. `--pool win`
+    (default) fetches 単勝/複勝; `--pool trifecta` fetches 3連単/3連複/拡連複
+    instead -- the two never ran through the same CLI before this, so
+    this is the first committed entry point for either (tasks/CURRENT.md,
+    2026-08-06: the original 80-day win/place archive was fetched by a
+    one-off script, never checked in)."""
+    parser = argparse.ArgumentParser(description=_main.__doc__)
+    parser.add_argument("--start-date", type=date.fromisoformat, required=True)
+    parser.add_argument("--end-date", type=date.fromisoformat, default=None)
+    parser.add_argument("--dest-dir", type=Path, required=True)
+    parser.add_argument(
+        "--pool",
+        choices=("win", "trifecta"),
+        default="win",
+        help="win = 単勝/複勝 (fetch_range); trifecta = 3連単/3連複/拡連複 (fetch_trifecta_family_range)",
+    )
+    parser.add_argument(
+        "--delay-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_DELAY_SECONDS,
+        help="minimum 1.0; the site's policy prohibits large-volume access",
+    )
+    args = parser.parse_args(argv)
+
+    fetch = fetch_range if args.pool == "win" else fetch_trifecta_family_range
+    written = fetch(
+        args.start_date,
+        args.end_date or args.start_date,
+        args.dest_dir,
+        delay_seconds=args.delay_seconds,
+    )
+    print(f"done: {written} pages written into {args.dest_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
