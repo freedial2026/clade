@@ -1164,19 +1164,58 @@ This matters beyond tidiness because `meeting_form_score` is credited
 with P1's **+1.12% log-loss improvement** (2026-08-01). Some unknown part
 of that may be the leak rather than the signal.
 
-**Not fixed here.** The repair is a two-part decision, not a typo: order
-the frame by `scheduled_deadline_at` (the Race docstring calls it the
-only real time-of-day anchor any source provides) with a deterministic
-tiebreaker, *and* decide whether an earlier same-day race should count
-as prior form at all -- it is legitimately available, so excluding it
-loses real signal, while including it needs the deadline comparison to
-be exact. Either choice changes every P1 and P2 number on record, which
-makes it a model-behaviour change rather than a bug fix, and it should
-be measured before and after rather than swapped in.
+**Fixed the same day (`4d3f328`), and the decision turned out not to be
+a judgement call.** The module docstring's Leakage section *already*
+stated the rule -- "grouping by `race_date < this race's date` rather
+than `<=` is what keeps a same-day earlier race's result out of a later
+race's features" -- so the intent was right and only the SQL disagreed
+with it. `loader.results_available_at` settles it independently: a
+K-file result is unavailable until midnight JST the next day, and its
+docstring explicitly gives up "race 1's result when predicting race 12"
+for want of per-race confirmation times. Counting a same-day race was
+never the intended behaviour.
 
-Until it is fixed, a cached entry at least makes a *given* run
-reproducible -- but it freezes the leaky feature rather than repairing
-it, and re-running with `--refresh-cache` will still move the numbers.
+The frame is now `GROUPS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING`,
+which counts whole peer groups and therefore means "every race on a
+strictly earlier day" no matter how ties are ordered -- deterministic by
+construction rather than by adding a tiebreaker. Verified to behave
+identically on PostgreSQL 17.10 and SQLite 3.45.3. The new same-day test
+fails against the old `ROWS` frame (`1.0 != 0.0`), so it pins the
+behaviour rather than restating it.
+
+`CACHE_FORMAT_VERSION` 1 → 2 was required and is the first real use of
+that escape hatch: the recipe fingerprint hashes constants, not SQL
+text, so the entries built that same morning would otherwise have been
+served back under the old rule.
+
+### What the leak was worth
+
+Same window, same folds, `.21`:
+
+| | mean log-loss |
+|---|---|
+| `logistic_cards`, leaky | 1.211519338121 |
+| **`logistic_cards`, fixed** | **1.213174186991** |
+| `lane_prior` (both) | 1.368139679548 |
+| `uniform` (both) | 1.791759469228 |
+
+The model got **0.001655 worse** (0.137%). `lane_prior` and `uniform`
+are unchanged to twelve decimals, which is the check that only the
+feature-dependent model moved.
+
+For scale: the within-meeting-form block was recorded on 2026-08-01 as
+worth +1.12% (1.22502 → 1.21134). The leak accounts for roughly an
+eighth of that. Treat the fraction as indicative rather than exact --
+the 1.22502 reference was measured in a different session and has not
+been re-run against today's data, and there is no flag to switch the
+block off for a clean attribution.
+
+**Every recorded P1, P2 and per-bet-type number predates this fix**,
+including the 複勝 EV result that is currently the strongest lead
+(trimmed 1.8204 @1.5). None of them is invalidated in direction, but
+each is worth re-running before it is quoted again -- the numbers moved
+by ~0.1% on log-loss and the ROI figures have never been checked against
+this feature at all.
 
 ## Next, in order
 
