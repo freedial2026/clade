@@ -129,8 +129,10 @@ MAX_CACHE_ENTRIES = 8
 Not optional housekeeping. The data fingerprint is part of the key and
 the database gains races every day, so the *same* command run on two
 days writes two entries -- a daily evaluation would otherwise grow the
-directory without bound. The P1 window measures **88 MB** per entry, so
-8 caps this at roughly 700 MB.
+directory without bound. The P1 window measures **29 MB** per entry on
+real data (synthetic Gaussian noise compresses far worse and suggested
+88 MB, which is why this figure is the one taken from `.21`), so 8 caps
+this at roughly 230 MB.
 
 Eviction is by modification time, which is a true LRU only because a hit
 does not rewrite the file. `load_dataset` deliberately does not touch

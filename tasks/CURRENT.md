@@ -1016,10 +1016,14 @@ Measured effect, at the real P1 window's shape:
 |---|---|
 | miss (build + fingerprint + save) | 50.1 + 3.2 + 4.7 ≈ 58 s |
 | **hit (fingerprint + load)** | 3.2 + 1.1 ≈ **4.3 s** |
-| entry size | 88 MB |
+| entry size | **29 MB** on real data |
 
 So a hit is ~12x faster end to end, and a cold run costs ~16% more than
 before. The 3.2 s is the fingerprint query itself, measured on `.21`.
+The 29 MB is also from `.21`; a local benchmark on synthetic Gaussian
+noise said 88 MB, which npz compresses far worse than real card
+features -- the eviction cap was sized against the wrong number until
+the deployed run corrected it.
 
 27 new tests (`tests/test_dataset_cache.py`) plus 4 in
 `tests/test_model_comparison.py` for the parallel path below --
@@ -1071,11 +1075,35 @@ the real effect (3.9 s vs 6.0 s, ~72 threads for 12 cores). Pinning is
 kept as the default -- never worse, clearly better mid-range, and better
 behaved on a host shared with other tenants.
 
-Projected combined effect on `evaluate_p1`'s recorded ~4 min run: ~50 s
-dataset → ~4 s on a cache hit, ~190 s of folds → ~32 s at 5.9x, so
-roughly **4 min → 40 s**. That is a projection from two separately
-measured parts, not an end-to-end timing; confirming it needs the
-deployment below.
+### Deployed and confirmed end to end (2026-08-09)
+
+Committed as `46c66b4`, pushed, `git pull --ff-only` on `.21`.
+**1018/1018 tests pass there** (2 skips are the pre-existing
+catboost/lightgbm adapters, neither installed).
+
+`evaluate_p1 --start-date 2023-01-01 --end-date 2026-07-29
+--min-train-months 12`, run twice on `.21`:
+
+| run | wall clock |
+|---|---|
+| cache miss, `n_jobs=1` (the old path, plus the cache write) | **269 s** |
+| cache hit, `--n-jobs 10` | **28 s** |
+
+**9.6x**, and the two runs agree to the last digit --
+`logistic_cards 1.21153`, `lane_prior 1.36814`, `uniform 1.79176`. That
+identity is the point: the cache and the worker pool changed the
+schedule and nothing else.
+
+The fold speed-up is larger than the 5.9x the synthetic benchmark
+predicted (~215 s → ~24 s, ~9x). Real fits iterate more than the
+synthetic ones did, so there is more work to overlap.
+
+One number that is *not* explained by this change: 1.21153 against the
+**1.21134** recorded on 2026-08-01. Both runs above agree exactly, and
+the first of them takes the old code path, so the difference predates
+this work -- most likely the data has moved under the same date window.
+Worth a look before the next figure is quoted against the old one, but
+it is not a regression introduced here.
 
 Only `evaluate_p1` goes through `run_comparison`. `evaluate_phase` and
 `evaluate_calibration` fit per fold in their own loops (deliberately --
