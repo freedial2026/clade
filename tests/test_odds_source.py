@@ -392,6 +392,108 @@ class FetchRangeTest(unittest.TestCase):
         self.assertEqual(EARLIEST_RETAINED_DATE, date(2017, 4, 1))
 
 
+class FailingOnceOpener(FakeOpener):
+    """Raises `OSError` for any request URL containing `fail_fragment`,
+    every time -- `_fetch`'s own 3-attempt retry loop still runs and
+    still exhausts, so this exercises the real end-to-end failure path
+    (retries then `OddsSourceError`), not just the outer catch."""
+
+    def __init__(self, fail_fragment: str) -> None:
+        super().__init__()
+        self.fail_fragment = fail_fragment
+
+    def urlopen(self, request: str, timeout: float | None = None) -> FakeResponse:
+        if self.fail_fragment in request:
+            raise OSError("Temporary failure in name resolution")
+        return super().urlopen(request, timeout=timeout)
+
+
+class BulkFetchToleratesFailuresTest(unittest.TestCase):
+    """A real unattended multi-day run died outright to one transient DNS
+    failure before this existed (tasks/CURRENT.md, 2026-08-09) -- `_fetch`
+    already retries 3 times internally, but once it gives up and raises
+    `OddsSourceError`, the *caller* has to decide whether that kills the
+    whole run. It must not.
+    """
+
+    def setUp(self) -> None:
+        # _fetch's internal retry backoff (1s then 2s) uses the module's
+        # own time.sleep, not the injectable `sleep` parameter -- patch it
+        # so a real 3-day-run failure test doesn't itself take 3 seconds.
+        patcher = patch("boat_prediction.odds_source.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_failed_race_is_skipped_and_the_run_continues(self) -> None:
+        opener = FailingOnceOpener(fail_fragment="rno=3&")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+
+            written = fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), dest,
+                opener=opener, sleep=lambda s: None, log=lambda m: None,
+            )
+
+            # 2 venues x 12 races, minus race 3 in *each* venue (2 failures).
+            self.assertEqual(written, 22)
+            self.assertFalse((dest / "20260601" / "01_03.html").exists())
+            self.assertTrue((dest / "20260601" / "01_04.html").exists())
+            self.assertFalse((dest / "20260601" / "24_03.html").exists())
+
+    def test_a_failed_venue_discovery_day_is_skipped_and_the_next_day_still_runs(
+        self,
+    ) -> None:
+        opener = FailingOnceOpener(fail_fragment="race/index?hd=20260601")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+
+            written = fetch_range(
+                date(2026, 6, 1), date(2026, 6, 2), dest,
+                opener=opener, sleep=lambda s: None, log=lambda m: None,
+            )
+
+            self.assertFalse((dest / "20260601").exists())
+            # 06-02's own index request isn't in the failing fragment, so
+            # that day proceeds normally: 2 venues x 12 races.
+            self.assertEqual(written, 24)
+            self.assertTrue((dest / "20260602" / "01_01.html").exists())
+
+    def test_a_rerun_after_a_transient_failure_picks_up_the_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            failing = FailingOnceOpener(fail_fragment="rno=3&")
+
+            fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), dest,
+                opener=failing, sleep=lambda s: None, log=lambda m: None,
+            )
+            self.assertFalse((dest / "20260601" / "01_03.html").exists())
+
+            healthy = FakeOpener()
+            written = fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), dest,
+                opener=healthy, sleep=lambda s: None, log=lambda m: None,
+            )
+
+            # Only the two files (one per venue) the first run couldn't write.
+            self.assertEqual(written, 2)
+            self.assertTrue((dest / "20260601" / "01_03.html").exists())
+            self.assertTrue((dest / "20260601" / "24_03.html").exists())
+
+    def test_run_does_not_raise_even_if_every_request_fails(self) -> None:
+        """The degenerate case: a run started right as the network went
+        down must still return cleanly (0 written) rather than crash an
+        unattended multi-day process on its very first request."""
+        opener = FailingOnceOpener(fail_fragment="boatrace.jp")
+        with tempfile.TemporaryDirectory() as tmp:
+            written = fetch_range(
+                date(2026, 6, 1), date(2026, 6, 1), Path(tmp),
+                opener=opener, sleep=lambda s: None, log=lambda m: None,
+            )
+
+        self.assertEqual(written, 0)
+
+
 class FetchTrifectaFamilyRangeTest(unittest.TestCase):
     """Same shape as `FetchRangeTest`, but three files per race -- the
     thing actually specific to this function -- rather than one."""
@@ -461,6 +563,27 @@ class FetchTrifectaFamilyRangeTest(unittest.TestCase):
             index_requests_after = sum(1 for r in opener.requests if "race/index" in r)
 
             self.assertEqual(index_requests_after, index_requests_before)
+
+    def test_a_failed_page_is_skipped_and_the_run_continues(self) -> None:
+        """Same resilience as `fetch_range` (BulkFetchToleratesFailuresTest),
+        pinned separately here because this function's inner loop has an
+        extra level of nesting (one more `for` over the three pages) that
+        a copy-paste fix could easily miss wrapping."""
+        with patch("boat_prediction.odds_source.time.sleep"):
+            opener = FailingOnceOpener(fail_fragment="odds3f")
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp)
+
+                written = fetch_trifecta_family_range(
+                    date(2026, 6, 1), date(2026, 6, 1), dest,
+                    opener=opener, sleep=lambda s: None, log=lambda m: None,
+                )
+
+                # 2 venues x 12 races x 3 pages, minus every odds3f page.
+                self.assertEqual(written, 48)
+                self.assertTrue((dest / "20260601" / "01_01_odds3t.html").exists())
+                self.assertFalse((dest / "20260601" / "01_01_odds3f.html").exists())
+                self.assertTrue((dest / "20260601" / "01_01_oddsk.html").exists())
 
 
 class KeepAliveSessionTest(unittest.TestCase):

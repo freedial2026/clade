@@ -667,6 +667,16 @@ def fetch_range(
     actual bottleneck, which is boatrace.jp's own response time; see
     `KeepAliveSession` for the measurement behind that distinction.
     Passing an explicit `opener` (tests do) skips this entirely.
+
+    One request's failure does not stop the run: a multi-day fetch will
+    outlive a transient network blip (a real DNS resolution failure
+    killed an unattended multi-day run outright before this was added --
+    tasks/CURRENT.md, 2026-08-09), and a day/race that failed to write
+    stays missing on disk, so the same idempotent skip-existing-file
+    check retries it on the next invocation. Matches
+    `load_archive.py`/`load_odds_archive.py`'s "one file's failure is
+    recorded, not raised" convention, adapted to a function that writes
+    files rather than database rows.
     """
     if delay_seconds < 1.0:
         raise OddsSourceError(f"delay_seconds must be >= 1.0, got {delay_seconds!r}")
@@ -682,6 +692,7 @@ def fetch_range(
     opener = opener or session
     try:
         written = 0
+        failed = 0
         current = start_date
         while current <= end_date:
             day_dir = dest_dir / current.strftime("%Y%m%d")
@@ -692,7 +703,14 @@ def fetch_range(
                     v for v in venues_marker.read_text(encoding="utf-8").split() if v
                 )
             else:
-                venues = fetch_racing_venues(current, opener=opener)
+                try:
+                    venues = fetch_racing_venues(current, opener=opener)
+                except OddsSourceError as exc:
+                    failed += 1
+                    log(f"{current.isoformat()}: venue discovery failed, skipping day: {exc}")
+                    sleep(delay_seconds)
+                    current = date.fromordinal(current.toordinal() + 1)
+                    continue
                 sleep(delay_seconds)
                 day_dir.mkdir(parents=True, exist_ok=True)
                 venues_marker.write_text("\n".join(venues), encoding="utf-8")
@@ -702,12 +720,21 @@ def fetch_range(
                     dest_path = day_dir / f"{venue_code}_{race_number:02d}.html"
                     if dest_path.exists():
                         continue
-                    html = _fetch(odds_url(current, venue_code, race_number), opener=opener)
+                    try:
+                        html = _fetch(odds_url(current, venue_code, race_number), opener=opener)
+                    except OddsSourceError as exc:
+                        failed += 1
+                        log(f"  failed, will retry next run: {exc}")
+                        sleep(delay_seconds)
+                        continue
                     dest_path.write_text(html, encoding="utf-8")
                     written += 1
                     sleep(delay_seconds)
 
-            log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
+            log(
+                f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far"
+                + (f", failed={failed}" if failed else "")
+            )
             current = date.fromordinal(current.toordinal() + 1)
         return written
     finally:
@@ -750,7 +777,9 @@ def fetch_trifecta_family_range(
 
     Same `KeepAliveSession`-by-default behavior as `fetch_range` when
     `opener` is not given -- see that function's docstring and
-    `KeepAliveSession` itself.
+    `KeepAliveSession` itself. Same per-request failure tolerance too --
+    see `fetch_range`'s docstring for why (a real unattended run died
+    outright to a transient DNS failure before this was added).
 
     Returns the number of pages newly written.
     """
@@ -768,6 +797,7 @@ def fetch_trifecta_family_range(
     opener = opener or session
     try:
         written = 0
+        failed = 0
         current = start_date
         while current <= end_date:
             day_dir = dest_dir / current.strftime("%Y%m%d")
@@ -778,7 +808,14 @@ def fetch_trifecta_family_range(
                     v for v in venues_marker.read_text(encoding="utf-8").split() if v
                 )
             else:
-                venues = fetch_racing_venues(current, opener=opener)
+                try:
+                    venues = fetch_racing_venues(current, opener=opener)
+                except OddsSourceError as exc:
+                    failed += 1
+                    log(f"{current.isoformat()}: venue discovery failed, skipping day: {exc}")
+                    sleep(delay_seconds)
+                    current = date.fromordinal(current.toordinal() + 1)
+                    continue
                 sleep(delay_seconds)
                 day_dir.mkdir(parents=True, exist_ok=True)
                 venues_marker.write_text("\n".join(venues), encoding="utf-8")
@@ -789,12 +826,23 @@ def fetch_trifecta_family_range(
                         dest_path = day_dir / f"{venue_code}_{race_number:02d}_{page_name}.html"
                         if dest_path.exists():
                             continue
-                        html = _fetch(url_fn(current, venue_code, race_number), opener=opener)
+                        try:
+                            html = _fetch(
+                                url_fn(current, venue_code, race_number), opener=opener
+                            )
+                        except OddsSourceError as exc:
+                            failed += 1
+                            log(f"  failed, will retry next run: {exc}")
+                            sleep(delay_seconds)
+                            continue
                         dest_path.write_text(html, encoding="utf-8")
                         written += 1
                         sleep(delay_seconds)
 
-            log(f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far")
+            log(
+                f"{current.isoformat()}: {len(venues)} venues, {written} pages written so far"
+                + (f", failed={failed}" if failed else "")
+            )
             current = date.fromordinal(current.toordinal() + 1)
         return written
     finally:
