@@ -1110,6 +1110,74 @@ Only `evaluate_p1` goes through `run_comparison`. `evaluate_phase` and
 they need per-race scores and a held-out calibration month), so they
 are unaffected and would need the same treatment separately.
 
+## `build_dataset` is not deterministic, and `meeting_form_score` leaks (2026-08-09)
+
+Found by the dataset cache, not caused by it. A cached entry and a fresh
+rebuild of the identical window disagreed while `y`, `dates` and
+`race_ids` matched exactly -- so the same rows, in the same order, with
+different feature values. **Two consecutive fresh builds also disagree**,
+which rules out the cache entirely: `build_dataset` is nondeterministic.
+
+Measured on `.21`, window 2023-01-01..2026-07-29:
+
+- **165,585 of 198,264 races (83.5%)** differ between two builds.
+- Every differing column is within-meeting form:
+  `laneN_meeting_starts` (by exactly 1) and `laneN_meeting_form_score`
+  (by up to 0.25), across all six lanes.
+
+The cause is `_MEETING_CTE`'s window frame:
+
+```sql
+WINDOW w AS (
+    PARTITION BY mw_meeting_id, mw_racer_id
+    ORDER BY mw_race_date
+    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+)
+```
+
+`ORDER BY mw_race_date` has no tiebreaker, and the tie is not a corner
+case -- **a racer runs twice on the same day in 62.10% of
+(meeting, racer, day) groups** (465,667 of 749,909; the maximum is 2, so
+this is 二走, the normal shape of a race card, not a data anomaly).
+With `ROWS` and a tied sort key the frame boundary falls wherever the
+executor happened to put the rows, and PostgreSQL does not promise that
+is stable between runs.
+
+**Two separate defects follow, and the second is the serious one.**
+
+1. *Reproducibility.* Every P1 figure recorded in this file was computed
+   from a dataset that cannot be rebuilt exactly -- against
+   `00-core.md`'s reproducibility rule. The observed spread is small
+   (`logistic_cards` mean log-loss moved 1.21153 → 1.21152 between two
+   sessions) but it is not zero and it is not bounded by anything.
+
+2. *Leakage.* Of a racer's two races on a day, whichever the executor
+   sorts second counts the other as a "prior" start -- including when
+   the other ran **later**, after the first race's deadline. That is
+   future information inside a feature the model consumes, so
+   `09-ml-data-science.md`'s `available_at <= prediction_at` rule is
+   violated for a large share of rows. `quality_audit`'s point_in_time
+   axis does not catch it: that checks `race_entries.available_at`
+   against the deadline, not values derived in the dataset query.
+
+This matters beyond tidiness because `meeting_form_score` is credited
+with P1's **+1.12% log-loss improvement** (2026-08-01). Some unknown part
+of that may be the leak rather than the signal.
+
+**Not fixed here.** The repair is a two-part decision, not a typo: order
+the frame by `scheduled_deadline_at` (the Race docstring calls it the
+only real time-of-day anchor any source provides) with a deterministic
+tiebreaker, *and* decide whether an earlier same-day race should count
+as prior form at all -- it is legitimately available, so excluding it
+loses real signal, while including it needs the deadline comparison to
+be exact. Either choice changes every P1 and P2 number on record, which
+makes it a model-behaviour change rather than a bug fix, and it should
+be measured before and after rather than swapped in.
+
+Until it is fixed, a cached entry at least makes a *given* run
+reproducible -- but it freezes the leaky feature rather than repairing
+it, and re-running with `--refresh-cache` will still move the numbers.
+
 ## Next, in order
 
 Reordered 2026-08-01 after a day of measurement against real data. See
