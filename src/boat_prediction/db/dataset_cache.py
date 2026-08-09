@@ -126,10 +126,21 @@ entries then miss rather than being read back under the new rules."""
 MAX_CACHE_ENTRIES = 8
 """How many entries to keep, oldest evicted first.
 
-Not optional housekeeping. The data fingerprint is part of the key and
-the database gains races every day, so the *same* command run on two
-days writes two entries -- a daily evaluation would otherwise grow the
-directory without bound. The P1 window measures **29 MB** per entry on
+Entries accumulate because the key covers the window, both feature
+flags, and the rows -- so every distinct evaluation writes its own, and
+`evaluate_p2`/`evaluate_bet_types` write two each for their train and
+test splits. A `--with-before-info` sweep across a few windows fills
+this quickly.
+
+What does *not* churn it: ordinary daily ingestion. The data
+fingerprint is bounded by the same window the query reads, so races
+landing today leave a cached historical window untouched -- verified on
+`.21`, where a run hit an entry written before a morning of cron
+captures. A fan-file refresh does invalidate everything at once, since
+`racer_period_course_stats` has no race date and is fingerprinted whole;
+that happens twice a year.
+
+The P1 window measures **29 MB** per entry on
 real data (synthetic Gaussian noise compresses far worse and suggested
 88 MB, which is why this figure is the one taken from `.21`), so 8 caps
 this at roughly 230 MB.
