@@ -94,6 +94,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
@@ -110,7 +111,13 @@ from ..combination_model import (
 from ..exacta import construct_exacta_probabilities, decode_combination
 from ..metrics import multiclass_log_loss
 from ..second_place import ConditionalSecondPlaceModel
-from .dataset import LANES, build_dataset
+from .dataset import LANES
+from .dataset_cache import (
+    add_cache_arguments,
+    build_dataset_cached,
+    cache_options,
+    report_to_stderr,
+)
 from .evaluate_p1 import sklearn_logistic_factory
 from .evaluate_p2 import RuleResult
 from .session import create_db_engine, create_session_factory
@@ -433,6 +440,8 @@ def evaluate_bet_types(
     second_place: str = "plackett_luce",
     include_before_info: bool = False,
     include_racer_stats: bool = False,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
 ) -> BetTypeEvaluation:
     if train_end >= test_start:
         raise ValueError(
@@ -445,12 +454,15 @@ def evaluate_bet_types(
     if second_place not in ("plackett_luce", "lane_frequency"):
         raise ValueError(f"unknown second-place conditional: {second_place!r}")
 
-    train = build_dataset(
+    train = build_dataset_cached(
         session,
         start_date=train_start,
         end_date=train_end,
         include_before_info=include_before_info,
         include_racer_stats=include_racer_stats,
+        cache_dir=cache_dir,
+        refresh=refresh_cache,
+        on_event=report_to_stderr,
     )
     if not len(train):
         raise ValueError(f"no usable training races between {train_start} and {train_end}")
@@ -466,12 +478,15 @@ def evaluate_bet_types(
     ]
     conditional_model = ConditionalSecondPlaceModel().fit(observations)
 
-    test = build_dataset(
+    test = build_dataset_cached(
         session,
         start_date=test_start,
         end_date=test_end,
         include_before_info=include_before_info,
         include_racer_stats=include_racer_stats,
+        cache_dir=cache_dir,
+        refresh=refresh_cache,
+        on_event=report_to_stderr,
     )
     result = BetTypeEvaluation(train_races=len(train), test_races=len(test))
     if not len(test):
@@ -612,6 +627,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--with-before-info", action="store_true")
     parser.add_argument("--with-racer-stats", action="store_true")
+    add_cache_arguments(parser)
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -628,6 +644,7 @@ def _main(argv: list[str] | None = None) -> int:
                 second_place=args.second_place,
                 include_before_info=args.with_before_info,
                 include_racer_stats=args.with_racer_stats,
+                **cache_options(args),
             )
     finally:
         engine.dispose()

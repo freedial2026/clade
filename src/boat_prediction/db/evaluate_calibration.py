@@ -52,11 +52,18 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..calibration import BinnedCalibrator, CalibrationReport
 from ..calibration import evaluate as evaluate_calibration
 from ..walk_forward import generate_monthly_folds
-from .dataset import LANES, build_dataset
+from .dataset import LANES
+from .dataset_cache import (
+    add_cache_arguments,
+    build_dataset_cached,
+    cache_options,
+    report_to_stderr,
+)
 from .evaluate_p1 import _sklearn_available, sklearn_logistic_factory
 from .session import create_db_engine, create_session_factory
 
@@ -113,7 +120,9 @@ class CalibrationResult:
 
 
 def evaluate(
-    session, *, start_date: dt.date, end_date: dt.date, min_train_months: int = 8
+    session, *, start_date: dt.date, end_date: dt.date, min_train_months: int = 8,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
 ) -> CalibrationResult:
     if min_train_months < 2:
         raise CalibrationEvalError(
@@ -123,7 +132,14 @@ def evaluate(
     if not _sklearn_available():
         raise CalibrationEvalError("scikit-learn is not installed; nothing to calibrate")
 
-    data = build_dataset(session, start_date=start_date, end_date=end_date)
+    data = build_dataset_cached(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        cache_dir=cache_dir,
+        refresh=refresh_cache,
+        on_event=report_to_stderr,
+    )
     if not len(data):
         raise CalibrationEvalError("no usable races in the requested range")
 
@@ -214,6 +230,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-date", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--end-date", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--min-train-months", type=int, default=8)
+    add_cache_arguments(parser)
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -224,6 +241,7 @@ def _main(argv: list[str] | None = None) -> int:
                 start_date=args.start_date,
                 end_date=args.end_date,
                 min_train_months=args.min_train_months,
+                **cache_options(args),
             )
     finally:
         engine.dispose()

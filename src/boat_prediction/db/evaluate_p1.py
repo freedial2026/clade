@@ -46,7 +46,13 @@ from pathlib import Path
 from ..baseline import LanePriorBaseline, UniformBaseline
 from ..model_comparison import run_comparison
 from ..walk_forward import generate_monthly_folds
-from .dataset import LANES, build_dataset
+from .dataset import LANES
+from .dataset_cache import (
+    add_cache_arguments,
+    build_dataset_cached,
+    cache_options,
+    report_to_stderr,
+)
 from .session import create_db_engine, create_session_factory
 
 
@@ -174,9 +180,23 @@ class EvaluationResult:
 
 
 def evaluate(
-    session, *, start_date: dt.date, end_date: dt.date, min_train_months: int = 6
+    session,
+    *,
+    start_date: dt.date,
+    end_date: dt.date,
+    min_train_months: int = 6,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
+    n_jobs: int = 1,
 ) -> EvaluationResult:
-    data = build_dataset(session, start_date=start_date, end_date=end_date)
+    data = build_dataset_cached(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        cache_dir=cache_dir,
+        refresh=refresh_cache,
+        on_event=report_to_stderr,
+    )
     if not len(data):
         raise ValueError("no usable races in the requested range")
 
@@ -197,6 +217,7 @@ def evaluate(
         list(LANES),
         baseline_factory=uniform_factory,
         candidate_factories=candidates,
+        n_jobs=n_jobs,
     )
 
     per_fold = []
@@ -235,7 +256,11 @@ def render(result: EvaluationResult) -> str:
         f"dataset: {result.dataset_stats}",
         "",
     ]
-    names = [k for k in result.per_fold[0] if k not in ("fold", "test_month", "train_races", "test_races")]
+    names = [
+        k
+        for k in result.per_fold[0]
+        if k not in ("fold", "test_month", "train_races", "test_races")
+    ]
     header = f"{'month':<10}{'train':>9}{'test':>8}" + "".join(f"{n:>18}" for n in names)
     lines.append(header)
     for row in result.per_fold:
@@ -264,6 +289,17 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end-date", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--min-train-months", type=int, default=6)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help=(
+            "fold-level worker processes (-1 = every core). The folds are "
+            "independent, so this changes scheduling only and the numbers "
+            "are identical to n_jobs=1."
+        ),
+    )
+    add_cache_arguments(parser)
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -274,6 +310,8 @@ def _main(argv: list[str] | None = None) -> int:
                 start_date=args.start_date,
                 end_date=args.end_date,
                 min_train_months=args.min_train_months,
+                n_jobs=args.n_jobs,
+                **cache_options(args),
             )
     finally:
         engine.dispose()

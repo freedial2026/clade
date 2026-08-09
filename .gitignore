@@ -22,6 +22,10 @@ venv/
 artifacts/
 data/raw/
 data/private/
+# Rebuildable from the database by db.dataset_cache, keyed by a hash of
+# the window, the feature flags and the rows it was built from -- a
+# per-environment artifact, never source.
+data/cache/
 models/*.bin
 models/*.pkl
 models/*.joblib

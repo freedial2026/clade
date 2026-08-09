@@ -29,10 +29,17 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..stability import StabilityReport, assess_subgroup_stability
 from ..walk_forward import generate_monthly_folds
-from .dataset import LANES, build_dataset
+from .dataset import LANES
+from .dataset_cache import (
+    add_cache_arguments,
+    build_dataset_cached,
+    cache_options,
+    report_to_stderr,
+)
 from .evaluate_p1 import (
     _sklearn_available,
     lane_prior_factory,
@@ -68,13 +75,22 @@ class PhaseEvaluationResult:
 
 
 def evaluate(
-    session, *, start_date: dt.date, end_date: dt.date, min_train_months: int = 6
+    session, *, start_date: dt.date, end_date: dt.date, min_train_months: int = 6,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
 ) -> PhaseEvaluationResult:
     """Fit each model per fold directly (not through `model_comparison`,
     which discards per-race predictions) so every test race's own loss
     can be tagged with its phase and pooled across folds before the
     subgroup breakdown."""
-    data = build_dataset(session, start_date=start_date, end_date=end_date)
+    data = build_dataset_cached(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        cache_dir=cache_dir,
+        refresh=refresh_cache,
+        on_event=report_to_stderr,
+    )
     if not len(data):
         raise ValueError("no usable races in the requested range")
 
@@ -162,6 +178,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-date", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--end-date", type=dt.date.fromisoformat, required=True)
     parser.add_argument("--min-train-months", type=int, default=6)
+    add_cache_arguments(parser)
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -172,6 +189,7 @@ def _main(argv: list[str] | None = None) -> int:
                 start_date=args.start_date,
                 end_date=args.end_date,
                 min_train_months=args.min_train_months,
+                **cache_options(args),
             )
     finally:
         engine.dispose()

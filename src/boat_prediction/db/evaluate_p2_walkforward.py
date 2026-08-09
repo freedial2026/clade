@@ -53,7 +53,13 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from .dataset import LANES, build_dataset
+from .dataset import LANES
+from .dataset_cache import (
+    add_cache_arguments,
+    build_dataset_cached,
+    cache_options,
+    report_to_stderr,
+)
 from .evaluate_p1 import sklearn_logistic_factory
 from .evaluate_p2 import TRIM_TOP_PAYOUTS, _market
 from .session import create_db_engine, create_session_factory
@@ -164,6 +170,8 @@ def build_month_rows(
     include_before_info: bool,
     include_racer_stats: bool,
     log=print,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
 ) -> list[MonthRow]:
     """Out-of-sample probability and price for every priced race-lane.
 
@@ -177,24 +185,30 @@ def build_month_rows(
         if train_end < model_start:
             continue
 
-        train = build_dataset(
+        train = build_dataset_cached(
             session,
             start_date=model_start,
             end_date=train_end,
             include_before_info=include_before_info,
             include_racer_stats=include_racer_stats,
+            cache_dir=cache_dir,
+            refresh=refresh_cache,
+            on_event=report_to_stderr,
         )
         if not len(train):
             continue
         model = sklearn_logistic_factory()()
         model.fit(train.X, train.y)
 
-        test = build_dataset(
+        test = build_dataset_cached(
             session,
             start_date=start,
             end_date=end,
             include_before_info=include_before_info,
             include_racer_stats=include_racer_stats,
+            cache_dir=cache_dir,
+            refresh=refresh_cache,
+            on_event=report_to_stderr,
         )
         if not len(test):
             continue
@@ -266,6 +280,8 @@ def walk_forward(
     include_before_info: bool = True,
     include_racer_stats: bool = True,
     log=print,
+    cache_dir: Path | None = None,
+    refresh_cache: bool = False,
 ) -> list[FoldResult]:
     months: list[str] = []
     cursor = dt.date(odds_start.year, odds_start.month, 1)
@@ -281,6 +297,8 @@ def walk_forward(
         include_before_info=include_before_info,
         include_racer_stats=include_racer_stats,
         log=log,
+        cache_dir=cache_dir,
+        refresh_cache=refresh_cache,
     )
     by_month: dict[str, list[MonthRow]] = {}
     for row in rows:
@@ -341,6 +359,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-before-info", action="store_true")
     parser.add_argument("--no-racer-stats", action="store_true")
     parser.add_argument("--json-out", type=Path, default=None)
+    add_cache_arguments(parser)
     args = parser.parse_args(argv)
 
     engine = create_db_engine(args.database_url)
@@ -354,6 +373,7 @@ def _main(argv: list[str] | None = None) -> int:
                 min_train_months=args.min_train_months,
                 include_before_info=not args.no_before_info,
                 include_racer_stats=not args.no_racer_stats,
+                **cache_options(args),
             )
     finally:
         engine.dispose()

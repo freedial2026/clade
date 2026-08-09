@@ -6,7 +6,11 @@
 - Status: B/K-file 21-year load **complete** on 192.168.11.21
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
-- Last handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
+- Last handoff: `db/dataset_cache.py` added (2026-08-09) -- the eight
+  `build_dataset` call sites were each re-issuing the same 50.1 s query.
+  Local-only so far; not yet deployed to `.21`. See the dated section
+  below.
+- Previous handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
   extended to all seven pools and run against real data on `.21`
   (2026-08-06) -- 複勝 clears breakeven under EV selection more strongly
   than 単勝. See the dated section below.
@@ -942,6 +946,141 @@ archive staged rather than fully backfilled) and is not proposed here —
 
 Still closing prices nobody can bet at for 単勝/複勝, and still no
 out-of-sample confirmation for any of this. See tasks/HANDOFF.md.
+
+## Evaluation-run cost measured; dataset cache added (2026-08-09)
+
+Prompted by "would a GPU help when simulating all venues". It would not,
+and the reason is that the cost is not arithmetic. Measured on `.21`
+against real data before changing anything:
+
+| component | measured |
+|---|---|
+| `build_dataset` (2023-01-01..2026-07-29, 198,264 races) | **50.1 s** |
+| `combination_model`, 7 pools x 38,766 races | 14.2 s (366 µs/race) |
+| `_AlignedProba.predict_proba`'s Python loop | ~0.12 s x 62 ≈ 7 s |
+| list-of-lists → ndarray conversion inside `fit` | ~0.33 s x 62 ≈ 20 s |
+| fold slice `[X[i] for i in idx]` | 0.01 s -- negligible |
+| logistic fit, 1.16 M x 100, 6-class (synthetic) | 3.6 s |
+
+So the model fitting -- the only part a GPU touches -- is seconds, and an
+RTX 3060's FP64 (~0.20 TFLOPS at the 1/64 rate) is *below* the host
+i5-10400's AVX2 (~0.28 TFLOPS), while numpy and scikit-learn default to
+float64. The host also has no discrete GPU and only `main
+non-free-firmware` in `sources.list`, so `nvidia-driver` is not even a
+candidate package. Not pursued.
+
+`build_dataset` is the real cost, and eight modules re-issue it --
+`evaluate_p1`, `evaluate_phase`, `evaluate_calibration`, `evaluate_p2`,
+`evaluate_p2_walkforward`, `evaluate_bet_types` and `train_model`, with
+two of them calling it twice for train and test.
+
+**`src/boat_prediction/db/dataset_cache.py`** (new) memoises it on disk.
+`build_dataset_cached` is a drop-in with the same signature.
+
+- **`.npz`, not Parquet.** No pyarrow/pandas/polars on the host, and
+  `PROJECT_PROFILE.md` gates array libraries on dataset size. numpy is
+  already there via the `ml` extra and round-trips float64 bit-exactly,
+  which matters because a cached run must reproduce an uncached run's
+  log-loss, not approximate it.
+- **The key is two fingerprints, and that is the whole design.** The
+  *recipe* hash covers the resolved column list plus every constant the
+  feature code reads at call time (`MEETING_FORM_SHRINKAGE_STARTS`,
+  `MEETING_WINDOW_MARGIN_DAYS`, `COURSE_BASE_WIN_RATE`,
+  `COURSE_SHRINKAGE_STARTS`, `_CLASS_RANK`, `CACHE_FORMAT_VERSION`).
+  Item 5 below plans to sweep the first of those; a date-keyed cache
+  would have served every point of that sweep the same pre-sweep rows,
+  with no error -- a model does not reject a row of the right width and
+  the wrong contents. The *data* hash is `COUNT(*)` + `MAX(updated_at)`
+  per source table, over a window widened by `MEETING_WINDOW_MARGIN_DAYS`
+  because `_MEETING_CTE` reaches back that far. `MAX(updated_at)` rather
+  than `MAX(id)` because `backfill_winning_method.py` updates in place.
+- The constants are read through the `dataset` module at call time, not
+  bound with `from ... import`. A `from` import would freeze them at this
+  module's import time and defeat the sweep case entirely -- caught by a
+  failing test, not by review.
+- Caching is **on for the CLI, off for the library**: every
+  `evaluate(...)` keeps `cache_dir=None` as its default, so the test
+  suite and programmatic callers are unchanged and no test run writes
+  into `data/cache/`. `--no-cache` / `--refresh-cache` / `--cache-dir`
+  added to the six evaluation CLIs.
+- `train_model.py` was left uncached on purpose: it freezes a model that
+  goes to production through the registry, and the value of a cache hit
+  there does not justify the class of bug a stale one would produce.
+- Eviction keeps the 8 newest entries (~88 MB each, so ~700 MB). The
+  data fingerprint changes as races land, so the same command on two
+  days writes two entries; without a cap a daily run grows unbounded.
+
+Measured effect, at the real P1 window's shape:
+
+| | |
+|---|---|
+| miss (build + fingerprint + save) | 50.1 + 3.2 + 4.7 ≈ 58 s |
+| **hit (fingerprint + load)** | 3.2 + 1.1 ≈ **4.3 s** |
+| entry size | 88 MB |
+
+So a hit is ~12x faster end to end, and a cold run costs ~16% more than
+before. The 3.2 s is the fingerprint query itself, measured on `.21`.
+
+27 new tests (`tests/test_dataset_cache.py`) plus 4 in
+`tests/test_model_comparison.py` for the parallel path below --
+**1018/1018 pass**, ruff clean. `data/cache/` added to `.gitignore`.
+
+**Not yet run against `.21`.** The round-trip and eviction numbers above
+come from this PC at the real window's shape; the 50.1 s and 3.2 s
+figures are from the host. End-to-end confirmation needs a push and a
+`git pull` there, which is the usual deployment approval.
+
+### Folds parallelised the same day
+
+`model_comparison.run_comparison` gained `n_jobs` (default 1, so nothing
+changes unless asked), and `evaluate_p1` a `--n-jobs` flag. The folds
+are independent, so this is scheduling only -- every fold's score is
+identical to the serial path, which is what the new tests pin.
+
+Two implementation details that are the whole difficulty:
+
+- `_one_fold` takes **row indices, not pre-cut slices**, so the parent
+  hands joblib one array to memmap instead of one slice per fold.
+  The first version sliced in the parent and would have written ~1.5 GB
+  of temporary memmaps for a 31-fold run.
+- `X` is converted to a numpy array for the parallel path only. As a
+  list of lists joblib cannot memmap it and would pickle 85 MB per task.
+  `n_jobs=1` keeps the original list path and needs neither numpy nor
+  joblib.
+
+Measured on `.21` (12 cores, 31 expanding folds at the P1 window's
+shape, synthetic data with signal so LBFGS iterates realistically):
+
+| | time | vs serial |
+|---|---|---|
+| serial | 21.4 s | — |
+| `n_jobs=10`, threads pinned | **3.6 s** | 5.9x |
+| `n_jobs=10`, unpinned | 3.6 s | 5.9x |
+| `n_jobs=6`, threads pinned | 3.9 s | 5.4x |
+| `n_jobs=6`, unpinned | 6.0 s | 3.5x |
+
+5.9x on 12 cores, not 12x -- the expanding window means the last fold
+trains on the whole span and bounds the wall clock, exactly as expected.
+
+**The BLAS-oversubscription claim needed correcting against the
+measurement.** A first run showed pinned *slower* than unpinned (4.7 s
+vs 3.8 s), which would have contradicted the reason for pinning at all.
+It was loky pool startup: the pinned configuration ran first and paid
+it. With both pools warmed, `n_jobs=10` is a tie and `n_jobs=6` shows
+the real effect (3.9 s vs 6.0 s, ~72 threads for 12 cores). Pinning is
+kept as the default -- never worse, clearly better mid-range, and better
+behaved on a host shared with other tenants.
+
+Projected combined effect on `evaluate_p1`'s recorded ~4 min run: ~50 s
+dataset → ~4 s on a cache hit, ~190 s of folds → ~32 s at 5.9x, so
+roughly **4 min → 40 s**. That is a projection from two separately
+measured parts, not an end-to-end timing; confirming it needs the
+deployment below.
+
+Only `evaluate_p1` goes through `run_comparison`. `evaluate_phase` and
+`evaluate_calibration` fit per fold in their own loops (deliberately --
+they need per-race scores and a held-out calibration month), so they
+are unaffected and would need the same treatment separately.
 
 ## Next, in order
 

@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 from datetime import date
 
 from boat_prediction.model_comparison import (
@@ -241,3 +242,97 @@ class CatboostAdapterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _constant_factory(classes):
+    """Top-level so a worker process can rebuild it.
+
+    The `lambda: ConstantProbClassifier(...)` form the serial tests use
+    works under loky too -- joblib pickles callables with cloudpickle --
+    but naming these makes the parallel tests independent of that detail
+    rather than quietly depending on it.
+    """
+    return lambda: ConstantProbClassifier(classes)
+
+
+def _lookup_factory(classes):
+    return lambda: FeatureLookupClassifier(classes)
+
+
+class RunComparisonParallelTest(unittest.TestCase):
+    """The folds are independent, so `n_jobs` may change scheduling and
+    nothing else. That is the property worth pinning: a parallel run that
+    produced *slightly* different numbers would invalidate every figure
+    recorded against the serial path."""
+
+    def setUp(self) -> None:
+        self.dates, self.X, self.y = _synthetic_dataset()
+        self.folds = generate_monthly_folds(self.dates, min_train_months=1)
+        self.classes = [0, 1]
+
+    def _run(self, n_jobs: int):
+        return run_comparison(
+            self.folds,
+            self.dates,
+            self.X,
+            self.y,
+            self.classes,
+            baseline_factory=_constant_factory(self.classes),
+            candidate_factories={"lookup": _lookup_factory(self.classes)},
+            n_jobs=n_jobs,
+        )
+
+    def test_parallel_matches_serial_exactly(self) -> None:
+        serial = self._run(1)
+        parallel = self._run(2)
+        self.assertEqual(len(serial), len(parallel))
+        for a, b in zip(serial, parallel):
+            self.assertEqual(a.fold_index, b.fold_index)
+            self.assertEqual(a.baseline_log_loss, b.baseline_log_loss)
+            self.assertEqual(a.candidate_log_losses, b.candidate_log_losses)
+
+    def test_results_come_back_in_fold_order(self) -> None:
+        parallel = self._run(2)
+        self.assertEqual([r.fold_index for r in parallel], [f.fold_index for f in self.folds])
+
+    def test_an_empty_split_is_rejected_before_any_worker_starts(self) -> None:
+        """Validation happens in the parent, so a bad fold fails the same
+        way whether or not workers were going to be used."""
+        bad = [
+            Fold(
+                fold_index=0,
+                train_start=date(2099, 1, 1),
+                train_end=date(2099, 1, 31),
+                test_start=date(2099, 2, 1),
+                test_end=date(2099, 2, 28),
+            )
+        ]
+        for n_jobs in (1, 2):
+            with self.subTest(n_jobs=n_jobs), self.assertRaises(ComparisonError):
+                run_comparison(
+                    bad,
+                    self.dates,
+                    self.X,
+                    self.y,
+                    self.classes,
+                    baseline_factory=_constant_factory(self.classes),
+                    candidate_factories={"lookup": _lookup_factory(self.classes)},
+                    n_jobs=n_jobs,
+                )
+
+    def test_missing_numpy_or_joblib_is_a_clear_error_not_an_import_crash(self) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def refuse(name, *args, **kwargs):
+            if name in ("numpy", "joblib"):
+                raise ImportError(f"no {name}")
+            return real_import(name, *args, **kwargs)
+
+        with (
+            unittest.mock.patch.object(builtins, "__import__", refuse),
+            self.assertRaises(ComparisonError) as ctx,
+        ):
+            self._run(2)
+        self.assertIn("n_jobs", str(ctx.exception))
