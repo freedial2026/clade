@@ -75,6 +75,13 @@ on its own. The shrinkage constant is therefore never absent -- a race
 with zero prior starts still gets a defined feature, equal to the season
 prior.
 
+"Earlier" means a strictly earlier **day** -- the rule the Leakage
+section above states. It is worth saying twice because between
+2026-08-01 and 2026-08-09 the SQL did not implement it: the frame was
+`ROWS` over an untied `ORDER BY mw_race_date`, so a racer's two races on
+one day each landed in the other's window depending on how the executor
+sorted them. See the note on `_MEETING_CTE`.
+
 直前情報
 --------
 
@@ -339,10 +346,35 @@ meeting_form AS (
     WINDOW w AS (
         PARTITION BY mw_meeting_id, mw_racer_id
         ORDER BY mw_race_date
-        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        GROUPS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
     )
 )
 """
+# `GROUPS`, not `ROWS`, and the difference is not stylistic.
+#
+# `ORDER BY mw_race_date` has no tiebreaker, and the tie is the normal
+# case rather than an edge one: a racer runs twice on the same day in
+# **62.10%** of (meeting, racer, day) groups (465,667 of 749,909 over
+# 2023-01-01..2026-07-29; the maximum is 2, so this is 二走, the ordinary
+# shape of a race card). Under `ROWS` the frame boundary then fell
+# wherever the executor happened to place the tied rows, which
+# PostgreSQL does not promise is stable -- two consecutive builds of the
+# same window disagreed on 165,585 of 198,264 races, entirely in
+# `meeting_starts` and `meeting_form_score`.
+#
+# `GROUPS ... 1 PRECEDING` counts whole peer groups, so it means "every
+# race on a strictly earlier day" no matter how ties are ordered. That
+# is both deterministic and the only reading consistent with
+# `loader.results_available_at`, which deliberately treats a K-file
+# result as unavailable until midnight JST the following day -- its
+# docstring gives up "race 1's result when predicting race 12" for
+# exactly this reason. Under `ROWS`, whichever of a racer's two races
+# sorted second counted the other as prior form, including when that
+# other race ran *later* the same day, putting future information into a
+# feature the model consumes.
+#
+# Supported identically by PostgreSQL 11+ and SQLite 3.28+ (verified on
+# the host's 17.10 and the test suite's 3.45.3).
 
 # Bounded by the same window the meeting CTE already binds rather than a
 # parameter of its own: it is 10 days wider than needed, which costs a few

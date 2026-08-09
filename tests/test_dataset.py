@@ -435,6 +435,84 @@ class MeetingFormAndPhaseTest(DatasetTestBase):
 
             self.assertEqual(self._lane_value(data, 1, "meeting_starts"), 0.0)
 
+    def test_an_earlier_race_the_same_day_does_not_count_as_prior_form(self) -> None:
+        """A racer runs twice on most days of a 節 -- 62.10% of
+        (meeting, racer, day) groups in the real archive. Counting the
+        earlier one would contradict `loader.results_available_at`, which
+        treats a K-file result as unavailable until midnight JST the next
+        day because the file carries no per-race confirmation time.
+        """
+        with Session(self.engine) as session:
+            meeting = RaceMeeting(venue_id=self.venue_id, meeting_start_date=dt.date(2026, 1, 5))
+            session.add(meeting)
+            session.flush()
+            # Same racer, same day, twice: race 1 then race 8.
+            self._add_race(
+                session, dt.date(2026, 1, 5), 1, meeting_id=meeting.id, winner_lanes=(1,)
+            )
+            self._add_race(
+                session, dt.date(2026, 1, 5), 8, meeting_id=meeting.id, winner_lanes=(2,)
+            )
+            session.commit()
+
+            data = self._build(session, dt.date(2026, 1, 5), dt.date(2026, 1, 5))
+
+            # Neither race sees the other, whichever way the engine
+            # ordered the tied rows -- so both fall back to the season
+            # prior exactly.
+            for row in range(len(data)):
+                self.assertEqual(data.X[row][data.feature_names.index("lane1_meeting_starts")], 0.0)
+                self.assertAlmostEqual(
+                    data.X[row][data.feature_names.index("lane1_meeting_form_score")], 0.55
+                )
+
+    def test_both_of_a_days_races_count_on_the_following_day(self) -> None:
+        """The flip side: excluding same-day races must not discard them
+        permanently. Once the day is over, both are prior form."""
+        with Session(self.engine) as session:
+            meeting = RaceMeeting(venue_id=self.venue_id, meeting_start_date=dt.date(2026, 1, 5))
+            session.add(meeting)
+            session.flush()
+            self._add_race(
+                session, dt.date(2026, 1, 5), 1, meeting_id=meeting.id, winner_lanes=(1,)
+            )
+            self._add_race(
+                session, dt.date(2026, 1, 5), 8, meeting_id=meeting.id, winner_lanes=(1,)
+            )
+            self._add_race(session, dt.date(2026, 1, 6), 1, meeting_id=meeting.id)
+            session.commit()
+
+            data = self._build(session, dt.date(2026, 1, 6), dt.date(2026, 1, 6))
+
+            # Two wins on day 1 => scores 1.0 and 1.0, shrunk with
+            # MEETING_FORM_SHRINKAGE_STARTS=3 and season_prior=0.55:
+            # (1.0*2 + 0.55*3) / (2+3) = 0.73.
+            self.assertEqual(self._lane_value(data, 1, "meeting_starts"), 2.0)
+            self.assertAlmostEqual(self._lane_value(data, 1, "meeting_form_score"), 0.73)
+
+    def test_the_same_window_builds_identically_twice(self) -> None:
+        """`ORDER BY mw_race_date` with a `ROWS` frame made this false on
+        PostgreSQL: the tie among a day's two races let the frame
+        boundary move between runs, and two builds of the real window
+        disagreed on 165,585 of 198,264 races."""
+        with Session(self.engine) as session:
+            meeting = RaceMeeting(venue_id=self.venue_id, meeting_start_date=dt.date(2026, 1, 5))
+            session.add(meeting)
+            session.flush()
+            for day in (5, 6, 7):
+                for race_number in (1, 8):
+                    self._add_race(
+                        session, dt.date(2026, 1, day), race_number,
+                        meeting_id=meeting.id, winner_lanes=(race_number % 6 + 1,),
+                    )
+            session.commit()
+
+            first = self._build(session, dt.date(2026, 1, 5), dt.date(2026, 1, 7))
+            second = self._build(session, dt.date(2026, 1, 5), dt.date(2026, 1, 7))
+
+        self.assertEqual(first.race_ids, second.race_ids)
+        self.assertEqual(first.X, second.X)
+
     def test_a_final_is_flagged_standing_seeded(self) -> None:
         with Session(self.engine) as session:
             self._add_race(session, dt.date(2026, 1, 5), 12, race_class="優勝戦")

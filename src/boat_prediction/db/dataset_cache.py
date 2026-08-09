@@ -118,10 +118,17 @@ from .dataset import Dataset, DatasetStats, build_dataset
 
 DEFAULT_CACHE_DIR = Path("data/cache/datasets")
 
-CACHE_FORMAT_VERSION = 1
+CACHE_FORMAT_VERSION = 2
 """Bump when the stored layout changes, or when a `dataset.py` change
 alters feature values without altering any constant hashed below. Old
-entries then miss rather than being read back under the new rules."""
+entries then miss rather than being read back under the new rules.
+
+1 → 2 (2026-08-09): `_MEETING_CTE` moved from a `ROWS` frame to
+`GROUPS`, changing `meeting_starts`/`meeting_form_score` on most races.
+The recipe hash covers constants, not the SQL text, so nothing else
+would have invalidated the entries built the same morning -- the first
+real instance of the gap this constant exists to cover.
+"""
 
 MAX_CACHE_ENTRIES = 8
 """How many entries to keep, oldest evicted first.
