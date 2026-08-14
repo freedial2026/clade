@@ -6,11 +6,16 @@
 - Status: B/K-file 21-year load **complete** on 192.168.11.21
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
-- Last handoff: `db/dataset_cache.py` added (2026-08-09) -- the eight
+- Last handoff: 3連単/3連複/拡連複 odds captured and backfilled for real
+  (2026-08-13) -- the 263-day window (2025-07-29..2026-04-17, matching
+  win/place's own archive) is fully loaded, 5,976,812 snapshots, 0
+  failures. 拡連複 clears breakeven under EV selection; 3連単 does not.
+  See the dated section below.
+- Previous handoff: `db/dataset_cache.py` added (2026-08-09) -- the eight
   `build_dataset` call sites were each re-issuing the same 50.1 s query.
-  Local-only so far; not yet deployed to `.21`. See the dated section
-  below.
-- Previous handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
+  Deployed to `.21` (confirmed at commit `46300f1`, same as this
+  handoff's work).
+- Earlier handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
   extended to all seven pools and run against real data on `.21`
   (2026-08-06) -- 複勝 clears breakeven under EV selection more strongly
   than 単勝. See the dated section below.
@@ -1217,6 +1222,146 @@ each is worth re-running before it is quoted again -- the numbers moved
 by ~0.1% on log-loss and the ROI figures have never been checked against
 this feature at all.
 
+## 3連単/3連複/拡連複 odds captured and backfilled: 拡連複 clears breakeven, 3連単 does not (2026-08-13)
+
+Answering the 2026-08-06 entry's open question -- fetching a grid for
+the three pools with no odds anywhere in this database. Verified the
+same way beforeinfo/odds retention was verified (a real race day/venue
+just before and at the boundary, plus a recent settled race): `odds3t`
+(3連単), `odds3f` (3連複) and `oddsk` (拡連複) share the exact same
+2017-04-01 retention boundary as `oddstf`/`odds2tf`, so a real backfill
+was possible, not just going-forward capture.
+
+**New**: `odds_source.py` gained fetchers and parsers for all three.
+The grid is a genuinely different shape from 2連単/2連複's flat pair
+grid -- a two-level nested structure per column, with a "leading" value
+carried forward via HTML rowspan (a shorter parsed `<tr>`) -- prototyped
+and verified against real fetched pages before being committed: 120/120
+unique combinations for 3連単, 20/20 for 3連複, 15/15 for 拡連複 (which
+turned out structurally identical to 2連複's grid and reuses that parser
+unmodified), zero duplicates, values matching a hand trace of the same
+page. `combination_model.construct_trifecta_probabilities` extends the
+existing P1→exacta joint by one more Plackett-Luce step
+(`P(third=k|i,j) = p_k/(1-p_i-p_j)`) rather than fitting a third model.
+
+`evaluate_bet_types.py`'s design changed alongside this: `BetTypeSpec`
+no longer has a `requires_odds` flag. Every pool always gets a
+`confidence` rule (needs no price) and `ev_best`/`ev_all` key off
+whatever `odds_snapshots` actually holds for that pool in the query
+window -- a pool with nothing captured shows `bets=0` rather than being
+coded out, and `BetTypeEvaluation.no_ev_data` reports which pools that
+was for a given run rather than a hardcoded list. This means the three
+pools got EV-selection support automatically the moment real odds
+existed, with no further code change needed once the backfill landed.
+
+### The backfill itself: three machines, one real production bug found
+
+Volume math (real request counts from `.21`, not the earlier
+mis-estimated ones): matching win/place's own already-archived window
+(2025-07-29..2026-04-17, 263 days) needed **117,612 requests** (3
+pages × ~150 races/day). At the assumed 3 s/request this looked like
+~98 h; live measurement said otherwise --
+
+- **The 3 s pacing was never the bottleneck.** A `curl -w` timing
+  breakdown showed TCP connect + TLS handshake at ~40 ms combined; the
+  measured **9-13 s per request** is boatrace.jp's own response time,
+  the same on `.21` and on two separate VPS hosts. A `KeepAliveSession`
+  (persistent HTTP connection, reused across requests) was built and
+  shipped anyway -- a real, harmless saving and fewer connections opened
+  against a site whose policy asks for restraint -- but its docstring
+  says plainly that it does not fix the schedule, after a live smoke
+  test confirmed no throughput change. The only real lever was running
+  fewer requests per host at once: splitting the date range across
+  hosts.
+- **Two VPS hosts the user provided** (shared/multi-tenant machines --
+  treated the same "one tenant, not the owner" way `.21` already is)
+  ran the fetch with no venv at all: `odds_source.py`'s fetch functions
+  are pure stdlib (`urllib`, no `bs4`), so `PYTHONPATH=src python3 -m
+  boat_prediction.odds_source` worked directly off a bare `git clone`.
+  One VPS home directory (`ash@133.117.76.87`) turned out
+  root-owned and unwritable by its own user -- worked around with
+  `/tmp` rather than chowning a directory on a shared box.
+- **A real production bug, found because two of three machines
+  survived it and one didn't.** `.21`'s run died outright ~2.5 days in:
+  one race's fetch hit a transient DNS resolution failure, `_fetch`'s
+  own 3-attempt retry loop exhausted (correctly, for a genuinely dead
+  window), raised `OddsSourceError`, and neither `fetch_range` nor
+  `fetch_trifecta_family_range` caught it -- an uncaught exception took
+  down an unattended multi-day process on one bad request. The two VPS
+  runs kept going throughout, which is what surfaced the gap: `.21` sat
+  silently dead for ~1.5 days before a status check (that itself first
+  had to get past a `pgrep -f` false positive matching its own grep
+  invocation) found it. Fixed the same day: both bulk fetchers now catch
+  `OddsSourceError` per request and per day, log it, and continue -- a
+  failed file simply stays missing, so the existing idempotent
+  skip-existing-file check retries it next run, matching
+  `load_archive.py`/`load_odds_archive.py`'s established "one file's
+  failure is recorded, not raised" convention. 9 new tests pin exactly
+  this (a failed race doesn't stop the run, a failed day doesn't take
+  out the next one, a rerun after a failure picks up only what's
+  missing, and total failure still returns cleanly).
+- **Finished by splitting the remaining work three ways as machines
+  freed up**, converging all three to roughly the same finish time
+  rather than leaving one host to run the full window alone. Final
+  split: `.21` 07-29..09-15 + 09-16..09-28, VPS1 10-24..01-18 +
+  09-29..10-11, VPS2 01-19..04-17 + 10-12..10-23 -- all three completed
+  cleanly, and the union covers the full 263 days with no gaps.
+- Data relayed from both VPS hosts to `.21` as a piped `tar` stream
+  (`ssh vps 'tar cz ...' | ssh .21 'tar xz ...'`), no intermediate copy
+  landed on the Windows PC. Final count on `.21`: **263 date
+  directories, 117,612 files, 4.7 GB** -- exact match to the
+  theoretical target, no gaps, no duplicates.
+
+New loader: `db/load_trifecta_archive.py`, mirroring
+`load_odds_archive.py`'s ledger/dry-run/resumable pattern.
+`loader.load_combination_odds_archive_day` is its write path -- the
+archive counterpart to `load_odds_day`, but replacing only the
+`bet_type`(s) one call carries rather than the whole race's snapshot
+set, since 単勝/複勝/2連単/2連複 are typically already on the race by
+the time this runs and must not be wiped by a 3連単-only load.
+
+**Dry-run then real load, both against the full 117,612-file archive**:
+identical results, 0 failures --
+
+```
+done: loaded_files=117612 skipped_missing=0 skipped_already_loaded=0 failed=0
+OddsLoadStats(snapshots=5976812, skipped_not_closing=1290, ...)
+```
+
+Confirmed in the database: 38,774 races, 2025-07-29..2026-04-17 exactly,
+for all three pools.
+
+### Real EV-selection results (same window and train split as 複勝/単勝)
+
+| pool | rule | thresh | hit | ROI | trimmed |
+|---|---|---|---|---|---|
+| 3連単 | confidence | -- | 8.85% | 0.7859 | 0.7682 |
+| 3連単 | ev_best | 1.5 | 0.44% | 0.5992 | 0.4186 |
+| 3連複 | confidence | -- | 23.69% | 0.7782 | 0.7739 |
+| 3連複 | ev_best | 1.5 | 8.23% | 0.7363 | 0.7080 |
+| 拡連複 | confidence | -- | 54.17% | 0.8247 | 0.8227 |
+| **拡連複** | **ev_best** | **1.5** | 20.75% | **1.2145** | **1.1237** |
+
+**拡連複 clears breakeven under EV selection**, the same shape as
+複勝's result (confidence priced at the takeout, EV selection genuinely
+above 1.0 even after the top-10-payout trim) -- a second combination
+pool with a real lead, not just 単勝's.
+
+**3連単 selection is actively harmful, and the reason is the one
+`combination_model.py`'s own docstring already named as a risk**: the
+Plackett-Luce conditional's independence-of-irrelevant-alternatives
+assumption is weakest for a third position, and `ev_best`'s 0.44% hit
+rate (against 8.85% for confidence) shows a rule chasing combinations
+the model overrates almost every time -- it is not merely unprofitable,
+it is close to picking blind. 3連複 lands in between: no clear edge
+either direction, consistent with 3連複 also depending on the third-place
+step but being less sensitive to it than an exact-order bet.
+
+Not yet re-run with the meeting-form leak fix's downstream effect on
+複勝/単勝's own EV numbers isolated from this session's earlier repeat --
+see the fix's own dated section above for that separate, smaller
+correction (~0.14% on log-loss).
+
 ## Next, in order
 
 Reordered 2026-08-01 after a day of measurement against real data. See
@@ -1262,6 +1407,19 @@ tasks/HANDOFF.md for the evidence behind each line.
    the most promising single number this line item has produced, and
    worth prioritizing over widening 2連単/2連複 coverage or fetching a
    grid for 3連単/3連複/拡連複.
+
+   **2026-08-13: the 3連単/3連複/拡連複 grid was fetched and backfilled**
+   (see the dated section above). 拡連複 joins 複勝 as a second combination
+   pool that clears breakeven under EV selection (trimmed 1.1237 @1.5) —
+   two independent pools now show the same shape. 3連単 selection is
+   actively harmful (0.44% hit rate, trimmed 0.42), which is informative
+   rather than a dead end: it is evidence the Plackett-Luce third-place
+   conditional specifically is unreliable, not that combination-bet EV
+   selection in general doesn't work. 3連複 shows no edge either
+   direction. 拡連複 and 複勝 together are now the two strongest leads —
+   both are top-2/top-3-style bets (拡連複: 2 of the actual top 3; 複勝:
+   top 2), which may itself be the pattern worth chasing next rather than
+   ordered/single-winner bets.
 3. ~~**Wire the per-course stats into the dataset**~~ — **done
    2026-08-03.** `dataset.include_racer_stats` joins
    `racer_period_course_stats` on the course actually taken
