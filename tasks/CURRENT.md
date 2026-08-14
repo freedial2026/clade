@@ -6,19 +6,28 @@
 - Status: B/K-file 21-year load **complete** on 192.168.11.21
   (2026-07-31 20:24, `failed=5`, all five since re-loaded clean), fixes
   deployed, and `race_meetings` rebuilt. Next is the odds archive load.
-- Last handoff: 3連単/3連複/拡連複 odds captured and backfilled for real
-  (2026-08-13) -- the 263-day window (2025-07-29..2026-04-17, matching
-  win/place's own archive) is fully loaded, 5,976,812 snapshots, 0
-  failures. 拡連複 clears breakeven under EV selection; 3連単 does not.
-  See the dated section below.
-- Previous handoff: `db/dataset_cache.py` added (2026-08-09) -- the eight
+- Last handoff: **every above-breakeven figure this project has recorded
+  comes from selecting on the settlement price** (2026-08-14).
+  `db/attribute_profit.py` (new) decomposes them: the model's ranking is
+  real (band+lane-controlled lift 1.46-1.68x, permutation z=25.8-56.2,
+  10/10 months for 複勝/拡連複), but the archived closing odds *are* what
+  the ticket pays, and on the 13 days of genuinely pre-deadline capture
+  every pool falls below breakeven (単勝 0.6501, 複勝 0.7825). See the
+  dated section in `tasks/HANDOFF.md`.
+- Previous handoff: 3連単/3連複/拡連複 odds captured and backfilled for
+  real (2026-08-13) -- the 263-day window (2025-07-29..2026-04-17,
+  matching win/place's own archive) is fully loaded, 5,976,812 snapshots,
+  0 failures. 拡連複 clears breakeven under EV selection **on closing
+  odds**; 3連単 does not.
+- Earlier handoff: `db/dataset_cache.py` added (2026-08-09) -- the eight
   `build_dataset` call sites were each re-issuing the same 50.1 s query.
   Deployed to `.21` (confirmed at commit `46300f1`, same as this
   handoff's work).
 - Earlier handoff: per-bet-type EV evaluation (`evaluate_bet_types.py`)
   extended to all seven pools and run against real data on `.21`
   (2026-08-06) -- 複勝 clears breakeven under EV selection more strongly
-  than 単勝. See the dated section below.
+  than 単勝. See the dated section below, and the 2026-08-14 attribution
+  above for what that number turned out to rest on.
 
 ## Runtime target: 192.168.11.21 (`boat.internal`)
 
