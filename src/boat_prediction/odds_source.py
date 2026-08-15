@@ -44,6 +44,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Self
 
 from .race_id import VALID_VENUE_CODES
 
@@ -193,7 +194,7 @@ class _KeepAliveResponse:
     def read(self) -> bytes:
         return self._response.read()
 
-    def __enter__(self) -> "_KeepAliveResponse":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> bool:
@@ -265,7 +266,7 @@ class KeepAliveSession:
             connection.close()
         self._connections.clear()
 
-    def __enter__(self) -> "KeepAliveSession":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> bool:
